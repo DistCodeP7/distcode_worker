@@ -6,59 +6,48 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/google/uuid"
 )
 
-func RunSubmission(code string) (string, string, error) {
-	ctx := context.Background()
+type Worker struct {
+	id          string
+	dockerCli   *client.Client
+	containerID string
+	hostPath    string
+}
 
-	log.Println("Step 1: Creating temp dir")
-	tmpDir := filepath.Join(os.Getenv("HOME"), "docker-work")
-	os.MkdirAll(tmpDir, 0755)
-	defer os.RemoveAll(tmpDir)
+type Result struct {
+	Stdout string
+	Stderr string
+	Err    error
+}
 
-	codePath := filepath.Join(tmpDir, "main.go")
-	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
-		return "", "", err
-	}
-	log.Printf("Step 2: Wrote code to %s\n", codePath)
+func New(ctx context.Context, cli *client.Client) (*Worker, error) {
+	log.Println("Initializing a new worker...")
 
-	log.Println("Step 3: Connecting to Docker")
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	hostPath, err := os.MkdirTemp("", "docker-worker-*")
 	if err != nil {
-		return "", "", err
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	log.Println("Step 4: Checking image")
-	_, err = cli.ImageInspect(ctx, "golang:1.22")
-	if err != nil {
-		log.Println("Image not found locally, pulling...")
-		cmd := exec.Command("docker", "pull", "golang:1.22")
-		if err := cmd.Run(); err != nil {
-			return "", "", fmt.Errorf("failed to pull image: %v", err)
-		} else {
-			log.Println("Image pulled successfully")
-		}
-	}
-
-	log.Println("Step 5: Creating container")
-	resp, err := cli.ContainerCreate(ctx, &container.Config{
-		Image:      "golang:1.22",
-		Cmd:        []string{"go", "run", "main.go"},
+	containerConfig := &container.Config{
+		Image:      "golang:1.25",
+		Cmd:        []string{"sleep", "infinity"},
 		Tty:        false,
 		WorkingDir: "/app",
-	}, &container.HostConfig{
+	}
+
+	hostConfig := &container.HostConfig{
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
-				Source: tmpDir, // fixed folder
+				Source: hostPath,
 				Target: "/app",
 			},
 		},
@@ -66,49 +55,91 @@ func RunSubmission(code string) (string, string, error) {
 			Memory:   512 * 1024 * 1024,
 			NanoCPUs: 1_000_000_000,
 		},
-	}, nil, nil, "")
-
-	if err != nil {
-		return "", "", err
 	}
 
-	defer func() {
-		log.Println("Cleaning up container")
-		_ = cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-	}()
+	log.Println("Creating container...")
+	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "")
+	if err != nil {
+		os.RemoveAll(hostPath)
+		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
 
-	log.Println("Step 6: Starting container")
+	log.Printf("Starting container %s...", resp.ID[:12])
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return "", "", err
+		os.RemoveAll(hostPath)
+		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
-	log.Println("Step 7: Waiting for container to finish")
-	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return "", "", err
-		}
-	case <-statusCh:
-		log.Println("Container finished execution")
-	case <-time.After(30 * time.Second):
-		log.Println("Execution timeout, killing container")
-		_ = cli.ContainerKill(ctx, resp.ID, "SIGKILL")
-		return "", "", fmt.Errorf("execution timeout")
+	worker := &Worker{
+		id:          uuid.NewString(),
+		dockerCli:   cli,
+		containerID: resp.ID,
+		hostPath:    hostPath,
 	}
 
-	log.Println("Step 8: Fetching logs")
-	logs, err := cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+	log.Printf("Worker %s initialized with container %s", worker.id, worker.containerID[:12])
+	return worker, nil
+}
+
+func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, error) {
+	codePath := filepath.Join(w.hostPath, "main.go")
+	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
+		return "", "", fmt.Errorf("failed to write code to file: %w", err)
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"go", "run", "main.go"},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := w.dockerCli.ContainerExecCreate(ctx, w.containerID, execConfig)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to create exec instance: %w", err)
 	}
-	defer logs.Close()
+
+	hijackedResp, err := w.dockerCli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to attach to exec instance: %w", err)
+	}
+	defer hijackedResp.Close()
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	_, err = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, logs)
+
+	_, err = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, hijackedResp.Reader)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to demultiplex stream: %w", err)
+	}
+
+	inspectResp, err := w.dockerCli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to inspect exec instance: %w", err)
+	}
+
+	if inspectResp.ExitCode != 0 {
+		// Even with a non-zero exit, stdout and stderr might contain useful info.
+		return stdoutBuf.String(), stderrBuf.String(),
+			fmt.Errorf("execution finished with non-zero exit code: %d", inspectResp.ExitCode)
 	}
 
 	return stdoutBuf.String(), stderrBuf.String(), nil
+}
+
+func (w *Worker) Stop(ctx context.Context) error {
+	log.Printf("Stopping worker %s and removing container %s", w.id, w.containerID[:12])
+
+	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: nil}); err != nil {
+		log.Printf("Warning: failed to gracefully stop container %s: %v", w.containerID[:12], err)
+	}
+
+	err := w.dockerCli.ContainerRemove(ctx, w.containerID, container.RemoveOptions{Force: true})
+	if err != nil {
+		return fmt.Errorf("failed to remove container: %w", err)
+	}
+
+	if err := os.RemoveAll(w.hostPath); err != nil {
+		return fmt.Errorf("failed to remove host path: %w", err)
+	}
+
+	return nil
 }
