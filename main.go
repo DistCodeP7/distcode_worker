@@ -36,8 +36,9 @@ type WorkerConfig struct {
 }
 
 func main() {
-	// Recieve the image name from command line flag e.g `go run main.go -image golang:1.25`
-	workerImageName := flag.String("image", "golang:1.25", "The Docker image to use for workers")
+	// Recieve the image name from command line flag e.g `go run main.go -i golang:1.25`
+	workerImageName := flag.String("i", "golang:1.25", "The Docker image to use for workers")
+	numWorkers := flag.Int("w", 4, "The number of worker goroutines to start")
 	flag.Parse()
 
 	// Setup context with cancellation on interrupt signals
@@ -58,7 +59,6 @@ func main() {
 		log.Fatalf("Failed to pre-pull image %s: %v", *workerImageName, err)
 	}
 
-	const numWorkers = 4
 	jobs := make(chan Job, 10)
 	results := make(chan JobResult, 10)
 
@@ -72,8 +72,8 @@ func main() {
 		Results:   results,
 	}
 
-	log.Printf("Starting %d workers...", numWorkers)
-	for i := 1; i <= numWorkers; i++ {
+	log.Printf("Starting %d workers...", *numWorkers)
+	for i := 1; i <= *numWorkers; i++ {
 		wg.Add(1)
 		go startWorker(&workerConfig, i)
 	}
