@@ -10,34 +10,33 @@ import (
 )
 
 func MQ(ctx context.Context, jobs chan<- types.Job) error {
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	connnection, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {
 		return err
 	}
-	// Keep connection open until context is done
-	defer conn.Close()
+	defer connnection.Close()
 
-	ch, err := conn.Channel()
+	channel, err := connnection.Channel()
 	if err != nil {
 		return err
 	}
-	defer ch.Close()
+	defer channel.Close()
 
-	q, err := ch.QueueDeclare("jobs", true, false, false, false, nil)
-	if err != nil {
-		return err
-	}
-
-	msgs, err := ch.Consume(q.Name, "", true, false, false, false, nil)
+	queue, err := channel.QueueDeclare("jobs", true, false, false, false, nil)
 	if err != nil {
 		return err
 	}
 
-	log.Println("Waiting for messages from MQ...")
+	message_channel, err := channel.Consume(queue.Name, "", true, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+
+	log.Println("Successfully connected to RabbitMQ. Waiting for messages from MQ...")
 
 	for {
 		select {
-		case d := <-msgs:
+		case d := <-message_channel:
 			if d.Body == nil {
 				continue
 			}
