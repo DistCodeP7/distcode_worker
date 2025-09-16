@@ -12,27 +12,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/reciever"
+	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
 
-type Job struct {
-	ID   int
-	Code string
-}
-
-type JobResult struct {
-	JobID  int
-	Result worker.Result
-}
-
 type WorkerConfig struct {
 	Ctx       context.Context
 	DockerCli *client.Client
 	Wg        *sync.WaitGroup
-	Jobs      <-chan Job
-	Results   chan<- JobResult
+	Jobs      <-chan types.Job
+	Results   chan<- types.JobResult
 }
 
 func main() {
@@ -59,10 +51,16 @@ func main() {
 		log.Fatalf("Failed to pre-pull image %s: %v", *workerImageName, err)
 	}
 
-	jobs := make(chan Job, 10)
-	results := make(chan JobResult, 10)
+	jobs := make(chan types.Job, 10)
+	results := make(chan types.JobResult, 10)
 
 	var wg sync.WaitGroup
+
+	go func() {
+		if err := reciever.MQ(ctx, jobs); err != nil {
+			log.Fatalf("MQ error: %v", err)
+		}
+	}()
 
 	workerConfig := WorkerConfig{
 		Ctx:       ctx,
@@ -77,25 +75,6 @@ func main() {
 		wg.Add(1)
 		go startWorker(&workerConfig, i)
 	}
-
-	// Simulate job submissions on a separate goroutine.
-	// This is called an "anonymous goroutine".
-	go func() {
-		submissions := []string{
-			`package main; import "fmt"; func main() { fmt.Println("Hello from Job 1!") }`,
-			`package main; import ("fmt"; "time"); func main() { fmt.Println("Job 2 is running..."); time.Sleep(2*time.Second); fmt.Println("Job 2 finished.") }`,
-			`package main; import "fmt"; func main() { fmt.Println("This code will produce an error"); asdf() }`,
-			`package main; import "fmt"; func main() { fmt.Println("Hello from Job 4!") }`,
-			`package main; import "fmt"; import "os"; func main() { fmt.Fprintln(os.Stderr, "This is a stderr message from Job 5"); fmt.Println("This is a stdout message from Job 5") }`,
-		}
-
-		for i, code := range submissions {
-			job := Job{ID: i + 1, Code: code}
-			log.Printf("Dispatching Job %d", job.ID)
-			jobs <- job
-		}
-		close(jobs)
-	}()
 
 	// Another goroutine to collect and log results from workers
 	go func() {
@@ -178,7 +157,7 @@ func startWorker(config *WorkerConfig, workerID int) {
 			execCtx, cancelExec := context.WithTimeout(config.Ctx, 30*time.Second)
 
 			stdout, stderr, err := w.ExecuteCode(execCtx, job.Code)
-			config.Results <- JobResult{
+			config.Results <- types.JobResult{
 				JobID: job.ID,
 				Result: worker.Result{
 					Stdout: stdout,
