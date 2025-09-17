@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
@@ -22,16 +23,11 @@ type Worker struct {
 	hostPath    string
 }
 
-type Result struct {
-	Stdout string
-	Stderr string
-	Err    error
-}
-
 func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	log.Println("Initializing a new worker...")
+	id := uuid.NewString()
 
-	hostPath, err := os.MkdirTemp("", "docker-worker-*")
+	hostPath, err := os.MkdirTemp("", "docker-worker-"+id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -44,6 +40,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	}
 
 	hostConfig := &container.HostConfig{
+		NetworkMode: "none",
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
@@ -52,8 +49,16 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 			},
 		},
 		Resources: container.Resources{
-			Memory:   512 * 1024 * 1024,
-			NanoCPUs: 1_000_000_000,
+			CPUShares:      512,
+			NanoCPUs:       500_000_000,       // 0.5 CPU
+			Memory:         256 * 1024 * 1024, // 256MB
+			PidsLimit:      ptrInt64(50),      // max 50 processes
+			MemorySwap:     256 * 1024 * 1024, // same as Memory, no swap
+			OomKillDisable: ptrBool(false),    // enable OOM killer
+			Ulimits: []*container.Ulimit{
+				{Name: "cpu", Soft: 30, Hard: 30},        // 30s CPU limit
+				{Name: "nofile", Soft: 1024, Hard: 1024}, // max open files
+			},
 		},
 	}
 
@@ -71,7 +76,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	}
 
 	worker := &Worker{
-		id:          uuid.NewString(),
+		id:          id,
 		dockerCli:   cli,
 		containerID: resp.ID,
 		hostPath:    hostPath,
@@ -79,6 +84,15 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 
 	log.Printf("Worker %s initialized with container %s", worker.id, worker.containerID[:12])
 	return worker, nil
+}
+
+func ptrBool(b bool) *bool {
+	return &b
+}
+
+func ptrInt64(i int) *int64 {
+	v := int64(i)
+	return &v
 }
 
 func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, error) {
@@ -98,7 +112,12 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 		return "", "", fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
-	hijackedResp, err := w.dockerCli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{})
+	container_ctx, cancel := context.WithTimeout(ctx, 40*time.Second) // 40 seconds
+	defer cancel()
+	hijackedResp, err := w.dockerCli.ContainerExecAttach(container_ctx, execID.ID, container.ExecStartOptions{
+		Detach: false,
+		Tty:    false,
+	})
 	if err != nil {
 		return "", "", fmt.Errorf("failed to attach to exec instance: %w", err)
 	}
@@ -111,7 +130,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 		return "", "", fmt.Errorf("failed to demultiplex stream: %w", err)
 	}
 
-	inspectResp, err := w.dockerCli.ContainerExecInspect(ctx, execID.ID)
+	inspectResp, err := w.dockerCli.ContainerExecInspect(container_ctx, execID.ID)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to inspect exec instance: %w", err)
 	}
