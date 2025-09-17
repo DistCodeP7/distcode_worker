@@ -48,7 +48,7 @@ func main() {
 		go worker.StartWorker(&workerConfig, i)
 	}
 
-	go results.Handle(results_ch)
+	go results.Handle(appResources.Ctx, results_ch)
 	wg.Wait()
 	close(results_ch)
 	log.Println("All workers have finished. Exiting.")
