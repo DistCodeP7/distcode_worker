@@ -9,7 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func MQ(ctx context.Context, jobs chan<- types.Job) error {
+func InitMessageQueue(ctx context.Context, jobs chan<- types.JobRequest) error {
 	connnection, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {
 		return err
@@ -40,7 +40,7 @@ func MQ(ctx context.Context, jobs chan<- types.Job) error {
 			if d.Body == nil {
 				continue
 			}
-			var job types.Job
+			var job types.JobRequest
 			if err := json.Unmarshal(d.Body, &job); err != nil {
 				log.Printf("Invalid job message: %s", d.Body)
 				continue
@@ -49,6 +49,7 @@ func MQ(ctx context.Context, jobs chan<- types.Job) error {
 			log.Printf("Received job %d from MQ", job.ID)
 		case <-ctx.Done():
 			log.Println("Shutting down MQ listener...")
+			close(jobs)
 			return nil
 		}
 	}
