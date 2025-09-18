@@ -32,17 +32,23 @@ func StartWorker(config *types.WorkerConfig, workerID int) {
 				log.Printf("Worker %d shutting down as jobs channel is closed.", workerID)
 				return
 			}
-			log.Printf("Worker %d picked up Job %d", workerID, job.ID)
+			log.Printf("Worker %d picked up Job %d", workerID, job.ProblemId)
 
 			execCtx, cancelExec := context.WithTimeout(config.Ctx, 30*time.Second)
 
 			stdout, stderr, err := w.ExecuteCode(execCtx, job.Code)
 			config.Results <- types.JobResult{
-				JobID: job.ID,
+				JobId:  job.ProblemId,
+				UserId: job.UserId,
 				Result: types.Result{
 					Stdout: stdout,
 					Stderr: stderr,
-					Err:    err,
+					Err: func() string {
+						if err != nil {
+							return err.Error()
+						}
+						return ""
+					}(),
 				},
 			}
 			cancelExec()
