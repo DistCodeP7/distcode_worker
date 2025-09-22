@@ -3,12 +3,14 @@ package worker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -160,5 +162,44 @@ func (w *Worker) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to remove host path: %w", err)
 	}
 
+	return nil
+}
+
+func WithRetry(fn func() error, maxAttempts int) error {
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		log.Printf("Attempt %d/%d failed: %v", attempt, maxAttempts, err)
+		time.Sleep(2 * time.Second) //backoff before retrying
+	}
+	return fmt.Errorf("all %d attempts failed: %w", maxAttempts, err)
+}
+
+func Process(msg types.Message) error {
+	if msg.Payload == "" {
+		return errors.New("empty payload")
+	}
+
+	ctx := context.Background()
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		return fmt.Errorf("failed to create Docker client: %w", err)
+	}
+
+	worker, err := New(ctx, cli)
+	if err != nil {
+		return fmt.Errorf("failed to create worker: %w", err)
+	}
+	defer worker.Stop(ctx)
+
+	stdout, stderr, err := worker.ExecuteCode(ctx, msg.Payload)
+	if err != nil {
+		return fmt.Errorf("execution failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+
+	log.Printf("Code execution successful\nstdout: %s\nstderr: %s", stdout, stderr)
 	return nil
 }
