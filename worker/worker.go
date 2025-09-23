@@ -95,10 +95,10 @@ func ptrInt64(i int) *int64 {
 	return &v
 }
 
-func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, error) {
+func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrCh chan string) error {
 	codePath := filepath.Join(w.hostPath, "main.go")
 	if err := os.WriteFile(codePath, []byte(code), 0644); err != nil {
-		return "", "", fmt.Errorf("failed to write code to file: %w", err)
+		return fmt.Errorf("failed to write code to file: %w", err)
 	}
 
 	execConfig := container.ExecOptions{
@@ -109,39 +109,80 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 
 	execID, err := w.dockerCli.ContainerExecCreate(ctx, w.containerID, execConfig)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create exec instance: %w", err)
+		return fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
-	container_ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	containerCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
-	hijackedResp, err := w.dockerCli.ContainerExecAttach(container_ctx, execID.ID, container.ExecStartOptions{
+	hijackedResp, err := w.dockerCli.ContainerExecAttach(containerCtx, execID.ID, container.ExecStartOptions{
 		Detach: false,
 		Tty:    false,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to attach to exec instance: %w", err)
+		return fmt.Errorf("failed to attach to exec instance: %w", err)
 	}
 	defer hijackedResp.Close()
 
-	var stdoutBuf, stderrBuf bytes.Buffer
+	done := make(chan error)
 
-	_, err = stdcopy.StdCopy(&stdoutBuf, &stderrBuf, hijackedResp.Reader)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to demultiplex stream: %w", err)
+	go func() {
+		_, err := stdcopy.StdCopy(
+			newChannelWriter(stdoutCh),
+			newChannelWriter(stderrCh),
+			hijackedResp.Reader,
+		)
+		close(stdoutCh)
+		close(stderrCh)
+		done <- err
+	}()
+
+	if err := <-done; err != nil {
+		return fmt.Errorf("failed to stream output: %w", err)
 	}
 
-	inspectResp, err := w.dockerCli.ContainerExecInspect(container_ctx, execID.ID)
+	inspectResp, err := w.dockerCli.ContainerExecInspect(containerCtx, execID.ID)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to inspect exec instance: %w", err)
+		return fmt.Errorf("failed to inspect exec instance: %w", err)
 	}
 
 	if inspectResp.ExitCode != 0 {
-		// Even with a non-zero exit, stdout and stderr might contain useful info.
-		return stdoutBuf.String(), stderrBuf.String(),
-			fmt.Errorf("execution finished with non-zero exit code: %d", inspectResp.ExitCode)
+		return fmt.Errorf("execution finished with non-zero exit code: %d", inspectResp.ExitCode)
 	}
 
-	return stdoutBuf.String(), stderrBuf.String(), nil
+	return nil
+}
+
+type channelWriter struct {
+	ch  chan string
+	buf bytes.Buffer
+}
+
+func newChannelWriter(ch chan string) *channelWriter {
+	cw := channelWriter{
+		ch: ch,
+	}
+	return &cw
+}
+
+// Write implements the io.Writer interface for channelWriter.
+// It writes the provided byte slice to an internal buffer, splitting the input at newline characters.
+// For each complete line (ending with '\n'), it sends the buffered string to the associated channel and resets the buffer.
+func (cw *channelWriter) Write(p []byte) (int, error) {
+	total := 0
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i == -1 {
+			cw.buf.Write(p)
+			total += len(p)
+			break
+		}
+		cw.buf.Write(p[:i])
+		cw.ch <- cw.buf.String()
+		cw.buf.Reset()
+		p = p[i+1:]
+		total += i + 1
+	}
+	return total, nil
 }
 
 func (w *Worker) Stop(ctx context.Context) error {

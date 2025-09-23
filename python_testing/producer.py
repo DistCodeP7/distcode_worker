@@ -17,6 +17,7 @@ go_snippets = [
     'package main\nimport "fmt"\nfunc main() { fmt.Println("Upper:", "hello world") }',
     'package main\nimport "fmt"\nfunc main() { fmt.Println("Sum:", 10+20) }',
     'package main\nimport "fmt"\nfunc main() { fmt.Println("Bool:", true && false) }',
+    'package main\nimport "fmt"\nfunc main() { fmt.Println(fib(20000000))}\nfunc fib(n int) int { f1:=0; f2:=1; for i := 0; i < n; i++ { f1,f2 = f2, f1+f2; fmt.Println(f1) }; return f1 }',
 ]
 
 # Connect to RabbitMQ
