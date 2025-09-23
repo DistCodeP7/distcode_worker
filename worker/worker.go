@@ -87,6 +87,17 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	return worker, nil
 }
 
+func (w *Worker) warmupWorker(ctx context.Context) error {
+	warmupcode := `package main 
+	import "fmt"
+	func main() {
+		fmt.Println("Warmup")
+	}`
+
+	_, _, err := w.ExecuteCode(ctx, warmupcode)
+	return err
+}
+
 func ptrBool(b bool) *bool {
 	return &b
 }
@@ -136,7 +147,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 	// Use a fresh context for inspection to avoid timeout issues
 	inspect_ctx, inspectCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer inspectCancel()
-	
+
 	inspectResp, err := w.dockerCli.ContainerExecInspect(inspect_ctx, execID.ID)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to inspect exec instance: %w", err)
