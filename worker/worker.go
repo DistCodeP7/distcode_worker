@@ -41,6 +41,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 
 	hostConfig := &container.HostConfig{
 		NetworkMode: "none",
+		Runtime: "runsc",
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
@@ -53,7 +54,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 			NanoCPUs:       500_000_000,       // 0.5 CPU
 			Memory:         256 * 1024 * 1024, // 256MB
 			PidsLimit:      ptrInt64(50),      // max 50 processes
-			MemorySwap:     256 * 1024 * 1024, // same as Memory, no swap
+			MemorySwap:     512 * 1024 * 1024, // 512MB - gVisor needs swap > memory
 			OomKillDisable: ptrBool(false),    // enable OOM killer
 			Ulimits: []*container.Ulimit{
 				{Name: "cpu", Soft: 30, Hard: 30},        // 30s CPU limit
@@ -112,9 +113,11 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 		return "", "", fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
-	container_ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
-	defer cancel()
-	hijackedResp, err := w.dockerCli.ContainerExecAttach(container_ctx, execID.ID, container.ExecStartOptions{
+	// Use separate contexts for execution and inspection
+	exec_ctx, execCancel := context.WithTimeout(ctx, 90*time.Second)
+	defer execCancel()
+	
+	hijackedResp, err := w.dockerCli.ContainerExecAttach(exec_ctx, execID.ID, container.ExecStartOptions{
 		Detach: false,
 		Tty:    false,
 	})
@@ -130,7 +133,11 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 		return "", "", fmt.Errorf("failed to demultiplex stream: %w", err)
 	}
 
-	inspectResp, err := w.dockerCli.ContainerExecInspect(container_ctx, execID.ID)
+	// Use a fresh context for inspection to avoid timeout issues
+	inspect_ctx, inspectCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer inspectCancel()
+	
+	inspectResp, err := w.dockerCli.ContainerExecInspect(inspect_ctx, execID.ID)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to inspect exec instance: %w", err)
 	}

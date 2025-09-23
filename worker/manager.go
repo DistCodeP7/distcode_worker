@@ -34,7 +34,7 @@ func StartWorker(config *types.WorkerConfig, workerID int) {
 			}
 			log.Printf("Worker %d picked up Job %d", workerID, job.ProblemId)
 
-			execCtx, cancelExec := context.WithTimeout(config.Ctx, 30*time.Second)
+			execCtx, cancelExec := context.WithTimeout(config.Ctx, 120*time.Second)
 
 			stdout, stderr, err := w.ExecuteCode(execCtx, job.Code)
 			config.Results <- types.JobResult{
