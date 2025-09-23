@@ -30,8 +30,10 @@ channel.queue_declare(queue=QUEUE_NAME, durable=True)
 # Publish jobs
 for i, code in enumerate(go_snippets, start=1):
     job = {
-        "ID": i,
-        "Code": code
+        "ProblemId": i,
+        "Code": code,
+        "UserId": 1
+
     }
     body = json.dumps(job)
     channel.basic_publish(

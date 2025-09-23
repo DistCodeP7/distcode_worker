@@ -8,19 +8,21 @@ import (
 )
 
 type JobRequest struct {
-	ID   int
-	Code string
+	ProblemId int
+	Code      string
+	UserId    int
 }
 
 type JobResult struct {
-	JobID  int
+	JobId  int
 	Result Result
+	UserId int
 }
 
 type Result struct {
 	Stdout string
 	Stderr string
-	Err    error
+	Err    string
 }
 
 type WorkerConfig struct {

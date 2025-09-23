@@ -46,7 +46,7 @@ func InitMessageQueue(ctx context.Context, jobs chan<- types.JobRequest) error {
 				continue
 			}
 			jobs <- job
-			log.Printf("Received job %d from MQ", job.ID)
+			log.Printf("Received job %d from MQ", job.ProblemId)
 		case <-ctx.Done():
 			log.Println("Shutting down MQ listener...")
 			close(jobs)

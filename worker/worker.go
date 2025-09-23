@@ -63,7 +63,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	}
 
 	log.Println("Creating container...")
-	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "")
+	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "worker-"+id)
 	if err != nil {
 		os.RemoveAll(hostPath)
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -112,7 +112,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string) (string, string, 
 		return "", "", fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
-	container_ctx, cancel := context.WithTimeout(ctx, 40*time.Second) // 40 seconds
+	container_ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 	hijackedResp, err := w.dockerCli.ContainerExecAttach(container_ctx, execID.ID, container.ExecStartOptions{
 		Detach: false,

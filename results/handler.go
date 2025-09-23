@@ -65,7 +65,7 @@ func Handle(ctx context.Context, results <-chan types.JobResult) {
 			if err != nil {
 				log.Printf("Failed to publish result: %v", err)
 			} else {
-				log.Printf("Published result for job %d", result.JobID)
+				log.Printf("Published result for job %d", result.JobId)
 			}
 		case <-ctx.Done():
 			log.Println("Context cancelled. Stopping results handler...")
