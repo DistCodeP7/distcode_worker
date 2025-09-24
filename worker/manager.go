@@ -127,8 +127,10 @@ func StartWorker(config *types.WorkerConfig, workerID int) {
 				}
 			}
 			muEvents.Unlock()
-
-			fmt.Println("Execution finished with error:", err)
+			if err != nil {
+				fmt.Println("Execution finished with error:", err)
+			}
+			log.Printf("Worker %d completed Job %d", workerID, job.ProblemId)
 
 		case <-config.Ctx.Done():
 			log.Printf("Worker %d received shutdown signal. Exiting.", workerID)
