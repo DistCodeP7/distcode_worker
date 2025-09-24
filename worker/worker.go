@@ -41,7 +41,6 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 
 	hostConfig := &container.HostConfig{
 		NetworkMode: "none",
-		Runtime: "runsc",
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
