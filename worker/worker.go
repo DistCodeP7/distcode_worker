@@ -53,7 +53,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 			NanoCPUs:       500_000_000,       // 0.5 CPU
 			Memory:         256 * 1024 * 1024, // 256MB
 			PidsLimit:      ptrInt64(50),      // max 50 processes
-			MemorySwap:     256 * 1024 * 1024, // same as Memory, no swap
+			MemorySwap:     512 * 1024 * 1024, // 512MB - gVisor needs swap > memory
 			OomKillDisable: ptrBool(false),    // enable OOM killer
 			Ulimits: []*container.Ulimit{
 				{Name: "cpu", Soft: 30, Hard: 30},        // 30s CPU limit
@@ -86,6 +86,17 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	return worker, nil
 }
 
+func (w *Worker) warmupWorker(ctx context.Context) error {
+	warmupcode := `package main 
+	import "fmt"
+	func main() {
+		fmt.Println("Warmup")
+	}`
+
+	_, _, err := w.ExecuteCode(ctx, warmupcode)
+	return err
+}
+
 func ptrBool(b bool) *bool {
 	return &b
 }
@@ -112,7 +123,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 		return fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
-	containerCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	containerCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	hijackedResp, err := w.dockerCli.ContainerExecAttach(containerCtx, execID.ID, container.ExecStartOptions{
 		Detach: false,
@@ -139,6 +150,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 	if err := <-done; err != nil {
 		return fmt.Errorf("failed to stream output: %w", err)
 	}
+
 
 	inspectResp, err := w.dockerCli.ContainerExecInspect(containerCtx, execID.ID)
 	if err != nil {
