@@ -13,16 +13,16 @@ type JobRequest struct {
 	UserId    int
 }
 
-type JobResult struct {
-	JobId  int
-	Result Result
-	UserId int
+type StreamingEvent struct {
+	Kind    string // "stdout" | "stderr" | "error"
+	Message string
 }
 
-type Result struct {
-	Stdout string
-	Stderr string
-	Err    string
+type StreamingJobResult struct {
+	JobId         int
+	Events        []StreamingEvent
+	UserId        int
+	SequenceIndex int
 }
 
 type WorkerConfig struct {
@@ -30,5 +30,5 @@ type WorkerConfig struct {
 	DockerCli *client.Client
 	Wg        *sync.WaitGroup
 	Jobs      <-chan JobRequest
-	Results   chan<- JobResult
+	Results   chan<- StreamingJobResult
 }

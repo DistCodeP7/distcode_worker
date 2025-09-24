@@ -24,7 +24,7 @@ func main() {
 	defer appResources.DockerCli.Close()
 
 	jobs_ch := make(chan types.JobRequest, jobsCapacity)
-	results_ch := make(chan types.JobResult, jobsCapacity)
+	results_ch := make(chan types.StreamingJobResult, jobsCapacity)
 	var wg sync.WaitGroup
 
 	// Start a goroutine to receive jobs from RabbitMQ

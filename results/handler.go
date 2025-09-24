@@ -9,7 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func Handle(ctx context.Context, results <-chan types.JobResult) {
+func Handle(ctx context.Context, results <-chan types.StreamingJobResult) {
 	// Connect to RabbitMQ
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {

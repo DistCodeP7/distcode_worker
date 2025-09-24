@@ -18,6 +18,7 @@ go_snippets = [
     'package main\nimport "fmt"\nfunc main() { fmt.Println("Sum:", 10+20) }',
     'package main\nimport "fmt"\nfunc main() { fmt.Println("Bool:", true && false) }',
     'package main\nimport "fmt"\nfunc main() { fmt.Println(fib(20000000))}\nfunc fib(n int) int { f1:=0; f2:=1; for i := 0; i < n; i++ { f1,f2 = f2, f1+f2 }; return f1 }',
+
 ]
 
 # Connect to RabbitMQ
@@ -33,7 +34,7 @@ for i, code in enumerate(go_snippets, start=1):
     job = {
         "ProblemId": i,
         "Code": code,
-        "UserId": 1
+        "UserId": 2
 
     }
     body = json.dumps(job)
