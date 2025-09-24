@@ -107,8 +107,6 @@ func (w *Worker) warmupWorker(ctx context.Context) error {
 
 	err := w.ExecuteCode(ctx, warmupcode, stdoutCh, stderrCh)
 
-	close(stdoutCh)
-	close(stderrCh)
 	return err
 }
 
