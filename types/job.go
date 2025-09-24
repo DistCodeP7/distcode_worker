@@ -13,17 +13,16 @@ type JobRequest struct {
 	UserId    int
 }
 
-type StreamingJobResult struct {
-	JobId  int
-	Result StreamingResult
-	UserId int
-	Done   bool
+type StreamingEvent struct {
+	Kind    string // "stdout" | "stderr" | "error"
+	Message string
 }
 
-type StreamingResult struct {
-	Stdout []string
-	Stderr []string
-	Error  string
+type StreamingJobResult struct {
+	JobId         int
+	Events        []StreamingEvent
+	UserId        int
+	SequenceIndex int
 }
 
 type WorkerConfig struct {

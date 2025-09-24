@@ -41,83 +41,82 @@ func StartWorker(config *types.WorkerConfig, workerID int) {
 			stderrCh := make(chan string)
 
 			var (
-				stdoutBuf []string
-				stderrBuf []string
-				muStdout  sync.Mutex
-				muStderr  sync.Mutex
+				eventBuf []types.StreamingEvent
+				muEvents sync.Mutex
 			)
 
+			// Capture stdout as events
 			go func() {
 				for line := range stdoutCh {
-					muStdout.Lock()
-					stdoutBuf = append(stdoutBuf, line)
-					muStdout.Unlock()
+					muEvents.Lock()
+					eventBuf = append(eventBuf, types.StreamingEvent{
+						Kind:    "stdout",
+						Message: line,
+					})
+					muEvents.Unlock()
 				}
 			}()
 
 			go func() {
 				for line := range stderrCh {
-					muStderr.Lock()
-					stderrBuf = append(stderrBuf, line)
-					muStderr.Unlock()
+					muEvents.Lock()
+					eventBuf = append(eventBuf, types.StreamingEvent{
+						Kind:    "stderr",
+						Message: line,
+					})
+					muEvents.Unlock()
 				}
 			}()
 
 			go func() {
-				ticker := time.NewTicker(100 * time.Millisecond)
+				ticker := time.NewTicker(50 * time.Millisecond)
 				defer ticker.Stop()
 
+				sequence := 0
 				for {
 					select {
 					case <-execCtx.Done():
 						return
 					case <-ticker.C:
-						muStdout.Lock()
-						outCopy := append([]string(nil), stdoutBuf...)
-						stdoutBuf = nil
-						muStdout.Unlock()
-
-						muStderr.Lock()
-						errCopy := append([]string(nil), stderrBuf...)
-						stderrBuf = nil
-						muStderr.Unlock()
-
-						if len(outCopy) > 0 || len(errCopy) > 0 {
+						muEvents.Lock()
+						if len(eventBuf) > 0 {
+							eventsCopy := append([]types.StreamingEvent(nil), eventBuf...)
+							eventBuf = nil
 							config.Results <- types.StreamingJobResult{
-								JobId:  job.ProblemId,
-								UserId: job.UserId,
-								Result: types.StreamingResult{
-									Stdout: outCopy,
-									Stderr: errCopy,
-									Error:  "",
-								},
+								JobId:         job.ProblemId,
+								UserId:        job.UserId,
+								SequenceIndex: sequence,
+								Events:        eventsCopy,
 							}
+							sequence++
 						}
+						muEvents.Unlock()
 					}
 				}
 			}()
 
 			err := w.ExecuteCode(execCtx, job.Code, stdoutCh, stderrCh)
 			cancelExec()
-			muStdout.Lock()
-			outCopy := append([]string(nil), stdoutBuf...)
-			stdoutBuf = nil
-			muStdout.Unlock()
 
-			muStderr.Lock()
-			errCopy := append([]string(nil), stderrBuf...)
-			stderrBuf = nil
-			muStderr.Unlock()
-
-			config.Results <- types.StreamingJobResult{
-				JobId:  job.ProblemId,
-				UserId: job.UserId,
-				Result: types.StreamingResult{
-					Stdout: outCopy,
-					Stderr: errCopy,
-					Error:  errString(err),
-				},
+			// Flush any remaining buffered events
+			muEvents.Lock()
+			if len(eventBuf) > 0 || err != nil {
+				eventsCopy := append([]types.StreamingEvent(nil), eventBuf...)
+				eventBuf = nil
+				if err != nil {
+					eventsCopy = append(eventsCopy, types.StreamingEvent{
+						Kind:    "error",
+						Message: errString(err),
+					})
+				}
+				config.Results <- types.StreamingJobResult{
+					JobId:         job.ProblemId,
+					UserId:        job.UserId,
+					SequenceIndex: -1,
+					Events:        eventsCopy,
+				}
 			}
+			muEvents.Unlock()
 
 			fmt.Println("Execution finished with error:", err)
 
