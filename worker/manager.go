@@ -18,6 +18,16 @@ func StartWorker(config *types.WorkerConfig, workerID int) {
 		return
 	}
 
+	log.Printf("Worker %d warming up...", workerID)
+	if err := w.warmupWorker(config.Ctx); err != nil {
+		log.Printf("Error warming up worker %d: %v", workerID, err)
+		if stopErr := w.Stop(context.Background()); stopErr != nil {
+			log.Printf("Error stopping worker %d after warmup failure: %v", workerID, stopErr)
+		}
+		return
+	}
+	log.Printf("Worker %d warmed up and ready to process jobs.", workerID)
+
 	defer func() {
 		if err := w.Stop(context.Background()); err != nil {
 			log.Printf("Error stopping worker %d: %v", workerID, err)
@@ -34,7 +44,7 @@ func StartWorker(config *types.WorkerConfig, workerID int) {
 			}
 			log.Printf("Worker %d picked up Job %d", workerID, job.ProblemId)
 
-			execCtx, cancelExec := context.WithTimeout(config.Ctx, 30*time.Second)
+			execCtx, cancelExec := context.WithTimeout(config.Ctx, 120*time.Second)
 
 			stdout, stderr, err := w.ExecuteCode(execCtx, job.Code)
 			config.Results <- types.JobResult{
