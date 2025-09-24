@@ -92,8 +92,23 @@ func (w *Worker) warmupWorker(ctx context.Context) error {
 	func main() {
 		fmt.Println("Warmup")
 	}`
+	stdoutCh := make(chan string)
+	stderrCh := make(chan string)
 
-	_, _, err := w.ExecuteCode(ctx, warmupcode)
+	//Avoid goroutine leaks: https://www.ardanlabs.com/blog/2018/11/goroutine-leaks-the-forgotten-sender.html
+	go func() {
+		for range stdoutCh {
+		}
+	}()
+	go func() {
+		for range stderrCh {
+		}
+	}()
+
+	err := w.ExecuteCode(ctx, warmupcode, stdoutCh, stderrCh)
+
+	close(stdoutCh)
+	close(stderrCh)
 	return err
 }
 
