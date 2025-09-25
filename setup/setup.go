@@ -7,11 +7,16 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"syscall"
+	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/google/uuid"
 )
 
 type AppResources struct {
@@ -23,6 +28,7 @@ type AppResources struct {
 // SetupApp initializes application resources required for running a worker.
 // It sets up a cancellable context that responds to interrupt signals,
 // creates a Docker client, and pre-pulls the specified worker image.
+// It also pre-warms the cache by running a dummy container.
 // Returns an AppResources struct containing the context, cancel function, and Docker client.
 // If any step fails, it cleans up resources and returns an error.
 func SetupApp(workerImageName string) (*AppResources, error) {
@@ -36,6 +42,7 @@ func SetupApp(workerImageName string) (*AppResources, error) {
 		cancel() // cleanup in case of error
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
+	log.Println("Docker client initialized.")
 
 	// Pre-pull the worker image
 	if err := prePullImage(ctx, cli, workerImageName); err != nil {
@@ -43,12 +50,107 @@ func SetupApp(workerImageName string) (*AppResources, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
 	}
+	log.Printf("Image '%s' is ready.", workerImageName)
+
+	// Pre-warm the cache by running a dummy container
+	if err := prewarmCache(ctx, cli, workerImageName); err != nil {
+		cli.Close()
+		cancel()
+		return nil, fmt.Errorf("failed to pre-warm cache: %w", err)
+	}
+	log.Println("Cache pre-warming completed.")
 
 	return &AppResources{
 		Ctx:       ctx,
 		Cancel:    cancel,
 		DockerCli: cli,
 	}, nil
+}
+
+func prewarmCache(ctx context.Context, cli *client.Client, workerImageName string) error {
+	log.Println("Initializing a new prewarming worker...")
+	id := uuid.NewString()
+
+	hostPath, err := os.MkdirTemp("", "prewarming-worker-"+id)
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(hostPath)
+
+	containerConfig := &container.Config{
+		Image:      workerImageName,
+		Cmd:        []string{"sleep", "infinity"},
+		Tty:        false,
+		WorkingDir: "/app",
+	}
+	hostConfig := &container.HostConfig{
+		NetworkMode: "none",
+		Mounts: []mount.Mount{
+			{Type: mount.TypeVolume, Source: "go-build-cache", Target: "/root/.cache/go-build"},
+			{Type: mount.TypeBind, Source: hostPath, Target: "/app"},
+		},
+	}
+
+	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "prewarm-"+id)
+	if err != nil {
+		os.RemoveAll(hostPath)
+		return fmt.Errorf("failed to create prewarming container: %w", err)
+	}
+
+	defer func() {
+		_ = cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
+	}()
+
+	log.Printf("Starting prewarming container %s...", resp.ID[:12])
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		os.RemoveAll(hostPath)
+		return fmt.Errorf("failed to start prewarming container: %w", err)
+	}
+
+	warmupCode := `package main
+	import (
+		"fmt"
+		"os"
+		"net/http"
+		"encoding/json"
+		"crypto/sha256"
+		// add more common stdlib imports
+	)
+	func main() { fmt.Println("Prewarm done") }`
+
+	if err := os.WriteFile(filepath.Join(hostPath, "main.go"), []byte(warmupCode), 0644); err != nil {
+		return fmt.Errorf("failed to write warmup code: %w", err)
+	}
+
+	execConfig := container.ExecOptions{
+		Cmd:          []string{"go", "run", "main.go"},
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+
+	execID, err := cli.ContainerExecCreate(ctx, resp.ID, execConfig)
+
+	if err != nil {
+		return fmt.Errorf("failed to create exec instance: %w", err)
+	}
+
+	containerCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	if err := cli.ContainerExecStart(ctx, execID.ID, container.ExecStartOptions{Detach: true}); err != nil {
+		return fmt.Errorf("failed to start exec: %w", err)
+	}
+
+	inspectResp, err := cli.ContainerExecInspect(containerCtx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("failed to inspect exec instance: %w", err)
+	}
+
+	if inspectResp.ExitCode != 0 {
+		return fmt.Errorf("execution finished with non-zero exit code: %d", inspectResp.ExitCode)
+	}
+
+	return nil
 }
 
 func prePullImage(ctx context.Context, cli *client.Client, imageName string) error {
