@@ -4,8 +4,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/DistCodeP7/distcode_worker/reciever"
-	"github.com/DistCodeP7/distcode_worker/results"
+	"github.com/DistCodeP7/distcode_worker/mq"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
@@ -15,7 +14,7 @@ func main() {
 	// Parse command line flags
 	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 
-	// Setup context, docker client, and ensure the worker image is available
+	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
 	appResources, err := setup.SetupApp(workerImageName)
 	if err != nil {
 		log.Fatalf("Fatal error in setup: %v", err)
@@ -29,7 +28,7 @@ func main() {
 
 	// Start a goroutine to receive jobs from RabbitMQ
 	go func() {
-		if err := reciever.InitMessageQueue(appResources.Ctx, jobs_ch); err != nil {
+		if err := mq.StartJobConsumer(appResources.Ctx, jobs_ch); err != nil {
 			log.Fatalf("MQ error: %v", err)
 		}
 	}()
@@ -48,7 +47,7 @@ func main() {
 		go worker.StartWorker(&workerConfig, i)
 	}
 
-	go results.Handle(appResources.Ctx, results_ch)
+	go mq.PublishJobResults(appResources.Ctx, results_ch)
 	wg.Wait()
 	close(results_ch)
 	log.Println("All workers have finished. Exiting.")
