@@ -3,135 +3,111 @@ package worker
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
-	"time"
 
-	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/docker/docker/client"
 )
 
-func StartWorker(config *types.WorkerConfig, workerID int) {
-	defer config.Wg.Done()
-	log.Printf("Worker %d starting...", workerID)
-
-	w, err := New(config.Ctx, config.DockerCli)
-	if err != nil {
-		log.Printf("Error starting worker %d: %v", workerID, err)
-		return
-	}
-
-	defer func() {
-		if err := w.Stop(context.Background()); err != nil {
-			log.Printf("Error stopping worker %d: %v", workerID, err)
-		}
-	}()
-
-	for {
-		select {
-		case job, ok := <-config.Jobs:
-			if !ok {
-				log.Printf("Worker %d shutting down as jobs channel is closed.", workerID)
-				return
-			}
-			log.Printf("Worker %d picked up Job %d", workerID, job.ProblemId)
-
-			execCtx, cancelExec := context.WithTimeout(config.Ctx, 120*time.Second)
-
-			stdoutCh := make(chan string)
-			stderrCh := make(chan string)
-
-			var (
-				eventBuf []types.StreamingEvent
-				muEvents sync.Mutex
-			)
-
-			// Capture stdout as events
-			go func() {
-				for line := range stdoutCh {
-					muEvents.Lock()
-					eventBuf = append(eventBuf, types.StreamingEvent{
-						Kind:    "stdout",
-						Message: line,
-					})
-					muEvents.Unlock()
-				}
-			}()
-
-			go func() {
-				for line := range stderrCh {
-					muEvents.Lock()
-					eventBuf = append(eventBuf, types.StreamingEvent{
-						Kind:    "stderr",
-						Message: line,
-					})
-					muEvents.Unlock()
-				}
-			}()
-
-			go func() {
-				ticker := time.NewTicker(50 * time.Millisecond)
-				defer ticker.Stop()
-
-				sequence := 0
-				for {
-					select {
-					case <-execCtx.Done():
-						return
-					case <-ticker.C:
-						muEvents.Lock()
-						if len(eventBuf) > 0 {
-							eventsCopy := append([]types.StreamingEvent(nil), eventBuf...)
-							eventBuf = nil
-							config.Results <- types.StreamingJobResult{
-								JobId:         job.ProblemId,
-								UserId:        job.UserId,
-								SequenceIndex: sequence,
-								Events:        eventsCopy,
-							}
-							sequence++
-						}
-						muEvents.Unlock()
-					}
-				}
-			}()
-
-			err := w.ExecuteCode(execCtx, job.Code, stdoutCh, stderrCh)
-			cancelExec()
-
-			// Flush any remaining buffered events
-			muEvents.Lock()
-			if len(eventBuf) > 0 || err != nil {
-				eventsCopy := append([]types.StreamingEvent(nil), eventBuf...)
-				eventBuf = nil
-				if err != nil {
-					eventsCopy = append(eventsCopy, types.StreamingEvent{
-						Kind:    "error",
-						Message: errString(err),
-					})
-				}
-				config.Results <- types.StreamingJobResult{
-					JobId:         job.ProblemId,
-					UserId:        job.UserId,
-					SequenceIndex: -1,
-					Events:        eventsCopy,
-				}
-			}
-			muEvents.Unlock()
-			if err != nil {
-				fmt.Println("Execution finished with error:", err)
-			}
-			log.Printf("Worker %d completed Job %d", workerID, job.ProblemId)
-
-		case <-config.Ctx.Done():
-			log.Printf("Worker %d received shutdown signal. Exiting.", workerID)
-			return
-		}
-	}
+type WorkerManager struct {
+	workers     map[string]*Worker // all workers by ID
+	idleWorkers []*Worker          // pool of idle workers
+	jobPool     map[int][]*Worker  // workers assigned per job
+	mu          sync.RWMutex       // lock for accessing workers, idleWorkers and jobPools
+	client      *client.Client
 }
 
-func errString(err error) string {
-	if err == nil {
-		return ""
+type WorkerManagerConfig struct {
+	Ctx         context.Context
+	DockerCli   *client.Client
+	WorkerCount int // Amount of workers
+}
+
+// Creates a new worker manager and instantiates workers
+func NewWorkerManager(config *WorkerManagerConfig) (*WorkerManager, error) {
+	workerList := make([]*Worker, config.WorkerCount)
+	workersMap := make(map[string]*Worker)
+
+	for i := 0; i < config.WorkerCount; i++ {
+		worker, err := NewWorker(config.Ctx, config.DockerCli)
+		if err != nil {
+			return nil, err
+		}
+		workerList[i] = worker
+		workersMap[worker.containerID] = worker
 	}
-	return err.Error()
+
+	manager := &WorkerManager{
+		workers:     workersMap,
+		idleWorkers: workerList,
+		jobPool:     make(map[int][]*Worker),
+		client:      config.DockerCli,
+	}
+
+	return manager, nil
+}
+
+func (w *WorkerManager) Shutdown() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex // protect firstErr in concurrent writes
+
+	for _, worker := range w.workers {
+		wg.Add(1)
+		go func(wk *Worker) {
+			defer wg.Done()
+			if err := wk.Stop(context.Background()); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}(worker)
+	}
+
+	wg.Wait()
+
+	// Clear references
+	w.workers = nil
+	w.idleWorkers = nil
+	w.jobPool = nil
+
+	return firstErr
+}
+
+func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]*Worker, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if len(w.idleWorkers) < jobSize {
+		return nil, fmt.Errorf("not enough idle workers currently")
+	}
+
+	reserved := w.idleWorkers[:jobSize]
+	w.idleWorkers = w.idleWorkers[jobSize:]
+	reservedCopy := make([]*Worker, len(reserved)) // Creates copy so caller can't modify
+	copy(reservedCopy, reserved)
+
+	w.jobPool[jobId] = reserved
+
+	return reservedCopy, nil
+}
+
+// Releases all the workers related to a job and inserts them into idleWorkers
+// Errors if the passed jobId isnt in jobPool
+func (w *WorkerManager) ReleaseJob(jobId int) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	reservedWorkers, ok := w.jobPool[jobId]
+	if !ok {
+		return fmt.Errorf("jobId %d not found", jobId)
+	}
+
+	delete(w.jobPool, jobId)
+	w.idleWorkers = append(w.idleWorkers, reservedWorkers...)
+	return nil
 }
