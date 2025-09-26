@@ -43,10 +43,17 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 		NetworkMode: "none",
 		Mounts: []mount.Mount{
 			{
+				Type:   mount.TypeVolume,
+				Source: "go-build-cache",
+				Target: "/root/.cache/go-build",
+				ReadOnly: true,
+        	},
+			{
 				Type:   mount.TypeBind,
 				Source: hostPath,
 				Target: "/app",
 			},
+			
 		},
 		Resources: container.Resources{
 			CPUShares:      512,
@@ -84,30 +91,6 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 
 	log.Printf("Worker %s initialized with container %s", worker.id, worker.containerID[:12])
 	return worker, nil
-}
-
-func (w *Worker) warmupWorker(ctx context.Context) error {
-	warmupcode := `package main 
-	import "fmt"
-	func main() {
-		fmt.Println("Warmup")
-	}`
-	stdoutCh := make(chan string)
-	stderrCh := make(chan string)
-
-	//Avoid goroutine leaks: https://www.ardanlabs.com/blog/2018/11/goroutine-leaks-the-forgotten-sender.html
-	go func() {
-		for range stdoutCh {
-		}
-	}()
-	go func() {
-		for range stderrCh {
-		}
-	}()
-
-	err := w.ExecuteCode(ctx, warmupcode, stdoutCh, stderrCh)
-
-	return err
 }
 
 func ptrBool(b bool) *bool {
