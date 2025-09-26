@@ -42,13 +42,12 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 		}
 	}
 }
-
 func (d *JobDispatcher) handleJob(ctx context.Context, job types.JobRequest) {
 	log.Printf("Starting job %v", job.ProblemId)
 
 	requiredWorkers := len(job.Code)
 
-	// --- Retry reserving workers until available or ctx is done ---
+	// --- Reserve workers ---
 	var workers []*Worker
 	var err error
 	for {
@@ -60,44 +59,72 @@ func (d *JobDispatcher) handleJob(ctx context.Context, job types.JobRequest) {
 		case <-ctx.Done():
 			return
 		case <-time.After(200 * time.Millisecond):
-			// retry
 		}
 	}
 
-	// --- Create per-job network ---
 	networkName := "job-" + uuid.NewString()
-	_, err = d.workerManager.client.NetworkCreate(ctx, networkName, network.CreateOptions{
-		Driver: "bridge",
-	})
+	_, err = d.workerManager.client.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
 	if err != nil {
 		log.Printf("Failed to create network %s: %v", networkName, err)
 	}
-	defer func() {
-		if rmErr := d.workerManager.client.NetworkRemove(ctx, networkName); rmErr != nil {
-			log.Printf("Failed to remove network %s: %v", networkName, rmErr)
-		}
-	}()
+	defer d.workerManager.client.NetworkRemove(ctx, networkName)
 
-	// --- Connect workers with aliases ---
 	for i, worker := range workers {
 		alias := fmt.Sprintf("worker-%d", i)
 		worker.ConnectToNetwork(ctx, networkName, alias)
 	}
 
 	var wg sync.WaitGroup
+	eventBuf := make([]types.StreamingEvent, 0)
+	var muEvents sync.Mutex
+	sequence := 0
+
+	// Aggregator ticker
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				muEvents.Lock()
+				if len(eventBuf) > 0 {
+					eventsCopy := append([]types.StreamingEvent(nil), eventBuf...)
+					eventBuf = nil
+					d.resultsChannel <- types.StreamingJobResult{
+						JobId:         job.ProblemId,
+						UserId:        job.UserId,
+						SequenceIndex: sequence,
+						Events:        eventsCopy,
+					}
+					sequence++
+				}
+				muEvents.Unlock()
+			}
+		}
+	}()
+
 	for i, worker := range workers {
 		stdoutCh := make(chan string, 10)
 		stderrCh := make(chan string, 10)
 
-		// log readers
+		// Stream stdout
 		go func(id string) {
 			for line := range stdoutCh {
-				log.Printf("Worker %s stdout: %s", id, line)
+				muEvents.Lock()
+				eventBuf = append(eventBuf, types.StreamingEvent{Kind: "stdout", Message: line})
+				muEvents.Unlock()
 			}
 		}(worker.containerID)
+
+		// Stream stderr
 		go func(id string) {
 			for line := range stderrCh {
-				log.Printf("Worker %s stderr: %s", id, line)
+				muEvents.Lock()
+				eventBuf = append(eventBuf, types.StreamingEvent{Kind: "stderr", Message: line})
+				muEvents.Unlock()
 			}
 		}(worker.containerID)
 
@@ -108,10 +135,12 @@ func (d *JobDispatcher) handleJob(ctx context.Context, job types.JobRequest) {
 			execCtx, cancelExec := context.WithTimeout(ctx, 120*time.Second)
 			defer cancelExec()
 
-			log.Printf("Executing code for worker %s", id)
 			if err := w.ExecuteCode(execCtx, code, stdoutCh, stderrCh); err != nil {
-				log.Printf("Worker %s failed: %v", id, err)
+				muEvents.Lock()
+				eventBuf = append(eventBuf, types.StreamingEvent{Kind: "error", Message: err.Error()})
+				muEvents.Unlock()
 			}
+
 			close(stdoutCh)
 			close(stderrCh)
 		}(worker, job.Code[i], worker.containerID)
@@ -119,7 +148,18 @@ func (d *JobDispatcher) handleJob(ctx context.Context, job types.JobRequest) {
 
 	wg.Wait()
 
-	// disconnect workers from network
+	// Send any remaining events
+	muEvents.Lock()
+	if len(eventBuf) > 0 {
+		d.resultsChannel <- types.StreamingJobResult{
+			JobId:         job.ProblemId,
+			UserId:        job.UserId,
+			SequenceIndex: -1,
+			Events:        eventBuf,
+		}
+	}
+	muEvents.Unlock()
+
 	for _, worker := range workers {
 		worker.DisconnectFromNetwork(ctx, networkName)
 	}
@@ -128,12 +168,5 @@ func (d *JobDispatcher) handleJob(ctx context.Context, job types.JobRequest) {
 		log.Fatalf("Job has been released twice, should never happen")
 	}
 
-	// send minimal result (streaming aggregation can be re-added later)
-	d.resultsChannel <- types.StreamingJobResult{
-		JobId:         job.ProblemId,
-		Events:        []types.StreamingEvent{},
-		UserId:        job.UserId,
-		SequenceIndex: 0,
-	}
 	log.Printf("Finished job %v", job.ProblemId)
 }
