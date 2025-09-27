@@ -19,7 +19,7 @@ type WorkerManager struct {
 type WorkerManagerConfig struct {
 	Ctx         context.Context
 	DockerCli   *client.Client
-	WorkerCount int // Amount of workers
+	WorkerCount int
 }
 
 // Creates a new worker manager and instantiates workers
@@ -52,7 +52,7 @@ func (w *WorkerManager) Shutdown() error {
 
 	var wg sync.WaitGroup
 	var firstErr error
-	var errMu sync.Mutex // protect firstErr in concurrent writes
+	var errMu sync.Mutex
 
 	for _, worker := range w.workers {
 		wg.Add(1)
@@ -69,12 +69,9 @@ func (w *WorkerManager) Shutdown() error {
 	}
 
 	wg.Wait()
-
-	// Clear references
 	w.workers = nil
 	w.idleWorkers = nil
 	w.jobPool = nil
-
 	return firstErr
 }
 

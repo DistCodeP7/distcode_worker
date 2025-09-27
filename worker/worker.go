@@ -26,7 +26,6 @@ type Worker struct {
 func NewWorker(ctx context.Context, cli *client.Client) (*Worker, error) {
 	log.Println("Initializing a new worker...")
 
-	// Create temp folder first
 	hostPath, err := os.MkdirTemp("", "docker-worker-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -43,7 +42,7 @@ func NewWorker(ctx context.Context, cli *client.Client) (*Worker, error) {
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeBind,
-				Source: hostPath, // now valid
+				Source: hostPath,
 				Target: "/app",
 			},
 			{

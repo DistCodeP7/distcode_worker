@@ -7,8 +7,9 @@ type JobRequest struct {
 }
 
 type StreamingEvent struct {
-	Kind    string // "stdout" | "stderr" | "error"
-	Message string
+	Kind     string // "stdout" | "stderr" | "error"
+	Message  string
+	WorkerId string
 }
 
 type StreamingJobResult struct {
