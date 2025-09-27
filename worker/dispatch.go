@@ -2,26 +2,25 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
-	"github.com/docker/docker/api/types/network"
-	"github.com/google/uuid"
 )
 
 type JobDispatcherConfig struct {
 	JobChannel     <-chan types.JobRequest         // receive-only
 	ResultsChannel chan<- types.StreamingJobResult // send-only
 	WorkerManager  *WorkerManager
+	NetworkManager NetworkManager
 }
 
 type JobDispatcher struct {
 	jobChannel     <-chan types.JobRequest
 	resultsChannel chan<- types.StreamingJobResult
 	workerManager  *WorkerManager
+	networkManager NetworkManager
 }
 
 func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
@@ -29,6 +28,7 @@ func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
 		jobChannel:     config.JobChannel,
 		resultsChannel: config.ResultsChannel,
 		workerManager:  config.WorkerManager,
+		networkManager: config.NetworkManager,
 	}
 }
 
@@ -56,7 +56,12 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		return
 	}
 
-	cleanupNetwork := d.createAndConnectNetwork(ctx, workers)
+	cleanupNetwork, err := d.networkManager.CreateAndConnect(ctx, workers)
+	if err != nil {
+		log.Printf("Failed to setup network for job %d: %v", job.ProblemId, err)
+		_ = d.workerManager.ReleaseJob(job.ProblemId)
+		return
+	}
 	defer cleanupNetwork()
 
 	ea := EventAggregator{
@@ -85,7 +90,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 
 // requestWorkerReservation tries to reserve the required number of workers for the job.
 // If not enough workers are available, it waits/blocks until they are or the context is cancelled.
-func (d *JobDispatcher) requestWorkerReservation(ctx context.Context, jobID, count int) ([]*Worker, error) {
+func (d *JobDispatcher) requestWorkerReservation(ctx context.Context, jobID, count int) ([]WorkerInterface, error) {
 	for {
 		workers, err := d.workerManager.ReserveWorkers(jobID, count)
 		if err == nil {
@@ -99,30 +104,6 @@ func (d *JobDispatcher) requestWorkerReservation(ctx context.Context, jobID, cou
 	}
 }
 
-// createAndConnectNetwork creates a Docker network and connects the given workers to it.
-// It returns a cleanup function that disconnects the workers and removes the network.
-func (d *JobDispatcher) createAndConnectNetwork(ctx context.Context, workers []*Worker) func() {
-	networkName := "job-" + uuid.NewString()
-	_, err := d.workerManager.client.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
-	if err != nil {
-		log.Printf("Failed to create network %s: %v", networkName, err)
-	}
-
-	for i, worker := range workers {
-		alias := fmt.Sprintf("worker-%d", i)
-		worker.ConnectToNetwork(ctx, networkName, alias)
-	}
-
-	cleanup := func() {
-		for _, worker := range workers {
-			worker.DisconnectFromNetwork(ctx, networkName)
-		}
-		d.workerManager.client.NetworkRemove(ctx, networkName)
-	}
-
-	return cleanup
-}
-
 // EventAggregator collects events from one or more workers and sends them to the results channel.
 type EventAggregator struct {
 	wg             sync.WaitGroup
@@ -132,7 +113,7 @@ type EventAggregator struct {
 }
 
 // startWorkerLogStreaming streams logs from a worker and appends them to the event buffer.
-func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker *Worker, code string) {
+func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker WorkerInterface, code string) {
 	stdoutCh := make(chan string, 10)
 	stderrCh := make(chan string, 10)
 
@@ -143,7 +124,7 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker *W
 			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "stdout", Message: line, WorkerId: id})
 			e.muEvents.Unlock()
 		}
-	}(worker.containerID)
+	}(worker.ID())
 
 	// Stream stderr
 	go func(id string) {
@@ -152,11 +133,11 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker *W
 			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "stderr", Message: line, WorkerId: id})
 			e.muEvents.Unlock()
 		}
-	}(worker.containerID)
+	}(worker.ID())
 
 	e.wg.Add(1)
 	// Run the code in the worker
-	go func(w *Worker, code string, id string) {
+	go func(w WorkerInterface, code string, id string) {
 		defer e.wg.Done()
 
 		execCtx, cancelExec := context.WithTimeout(ctx, 120*time.Second)
@@ -170,7 +151,7 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker *W
 
 		close(stdoutCh)
 		close(stderrCh)
-	}(worker, code, worker.containerID)
+	}(worker, code, worker.ID())
 }
 
 // startPeriodicFlush periodically sends events to the results channel.

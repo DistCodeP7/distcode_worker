@@ -32,11 +32,16 @@ func main() {
 		}
 	}()
 
-	wm, err := worker.NewWorkerManager(&worker.WorkerManagerConfig{
-		Ctx:         appResources.Ctx,
-		DockerCli:   appResources.DockerCli,
-		WorkerCount: numWorkers,
-	})
+	workers := make([]worker.WorkerInterface, numWorkers)
+	for i := range numWorkers {
+		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
+		if err != nil {
+			log.Fatalf("Failed to create worker: %v", err)
+		}
+		workers[i] = worker
+	}
+
+	wm, err := worker.NewWorkerManager(workers)
 
 	if err != nil {
 		log.Fatalf("Failed to create worker manager: %v", err)
@@ -46,6 +51,7 @@ func main() {
 		JobChannel:     jobsCh,
 		ResultsChannel: resultsCh,
 		WorkerManager:  wm,
+		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
 	})
 
 	go dispatcher.Run(appResources.Ctx)

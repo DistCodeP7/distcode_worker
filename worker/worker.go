@@ -23,7 +23,17 @@ type Worker struct {
 	hostPath    string
 }
 
-func NewWorker(ctx context.Context, cli *client.Client) (*Worker, error) {
+type WorkerInterface interface {
+	ID() string
+	ConnectToNetwork(ctx context.Context, networkName, alias string) error
+	DisconnectFromNetwork(ctx context.Context, networkName string) error
+	Stop(ctx context.Context) error
+	ExecuteCode(ctx context.Context, code string, stdoutCh, stderrCh chan string) error
+}
+
+var _ WorkerInterface = (*Worker)(nil)
+
+func NewWorker(ctx context.Context, cli *client.Client, workerImageName string) (*Worker, error) {
 	log.Println("Initializing a new worker...")
 
 	hostPath, err := os.MkdirTemp("", "docker-worker-*")
@@ -32,7 +42,7 @@ func NewWorker(ctx context.Context, cli *client.Client) (*Worker, error) {
 	}
 
 	containerConfig := &container.Config{
-		Image:      "golang:1.25",
+		Image:      workerImageName,
 		Cmd:        []string{"sleep", "infinity"},
 		Tty:        false,
 		WorkingDir: "/app",
@@ -85,6 +95,10 @@ func NewWorker(ctx context.Context, cli *client.Client) (*Worker, error) {
 
 	log.Printf("Worker initialized with container %s", worker.containerID[:12])
 	return worker, nil
+}
+
+func (w *Worker) ID() string {
+	return w.containerID
 }
 
 func (w *Worker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
