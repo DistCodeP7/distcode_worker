@@ -12,8 +12,9 @@ import (
 type JobDispatcherConfig struct {
 	JobChannel     <-chan types.JobRequest         // receive-only
 	ResultsChannel chan<- types.StreamingJobResult // send-only
-	WorkerManager  *WorkerManager
-	NetworkManager NetworkManager
+	WorkerManager  *WorkerManager                  // assumes non-nil
+	NetworkManager NetworkManager                  // assumes non-nil
+	Clock          Clock                           // Optional, for testing purposes
 }
 
 type JobDispatcher struct {
@@ -21,6 +22,7 @@ type JobDispatcher struct {
 	resultsChannel chan<- types.StreamingJobResult
 	workerManager  *WorkerManager
 	networkManager NetworkManager
+	Clock          Clock
 }
 
 func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
@@ -29,6 +31,7 @@ func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
 		resultsChannel: config.ResultsChannel,
 		workerManager:  config.WorkerManager,
 		networkManager: config.NetworkManager,
+		Clock:          config.Clock,
 	}
 }
 
@@ -69,6 +72,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		muEvents:       sync.Mutex{},
 		resultsChannel: d.resultsChannel,
 		eventBuf:       make([]types.StreamingEvent, 0),
+		clock:          d.Clock,
 	}
 
 	cleanupTimedFlush := ea.startPeriodicFlush(ctx, job, 200*time.Millisecond)
@@ -99,7 +103,8 @@ func (d *JobDispatcher) requestWorkerReservation(ctx context.Context, jobID, cou
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-d.Clock.After(200 * time.Millisecond):
+			// Retry after a short delay
 		}
 	}
 }
@@ -110,6 +115,7 @@ type EventAggregator struct {
 	muEvents       sync.Mutex
 	resultsChannel chan<- types.StreamingJobResult
 	eventBuf       []types.StreamingEvent
+	clock          Clock
 }
 
 // startWorkerLogStreaming streams logs from a worker and appends them to the event buffer.
@@ -156,7 +162,7 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker Wo
 
 // startPeriodicFlush periodically sends events to the results channel.
 func (e *EventAggregator) startPeriodicFlush(ctx context.Context, job types.JobRequest, tickerInterval time.Duration) func() {
-	ticker := time.NewTicker(tickerInterval)
+	ticker := e.clock.NewTicker(tickerInterval)
 	sequence := 0
 
 	go func() {
@@ -164,7 +170,7 @@ func (e *EventAggregator) startPeriodicFlush(ctx context.Context, job types.JobR
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-ticker.C():
 				e.muEvents.Lock()
 				if len(e.eventBuf) > 0 {
 					eventsCopy := append([]types.StreamingEvent(nil), e.eventBuf...)

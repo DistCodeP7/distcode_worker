@@ -52,6 +52,7 @@ func main() {
 		ResultsChannel: resultsCh,
 		WorkerManager:  wm,
 		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
+		Clock:          worker.RealClock{},
 	})
 
 	go dispatcher.Run(appResources.Ctx)
