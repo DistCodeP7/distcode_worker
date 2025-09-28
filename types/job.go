@@ -1,9 +1,10 @@
 package types
 
 type JobRequest struct {
-	ProblemId int
-	Code      []string
-	UserId    int
+	ProblemId    int
+	Code         []string
+	UserId       int
+	TimeoutLimit int // in seconds
 }
 
 type StreamingEvent struct {

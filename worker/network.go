@@ -1,5 +1,3 @@
-// Create a new file, e.g., network.go
-
 package worker
 
 import (

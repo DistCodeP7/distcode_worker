@@ -34,7 +34,6 @@ func NewWorkerManager(initialWorkers []WorkerInterface) (*WorkerManager, error) 
 	return manager, nil
 }
 
-// ReserveWorkers now returns a slice of the interface type.
 func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -53,7 +52,6 @@ func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, e
 	return reservedCopy, nil
 }
 
-// Shutdown now calls Stop() on the interface.
 func (w *WorkerManager) Shutdown() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -64,7 +62,7 @@ func (w *WorkerManager) Shutdown() error {
 
 	for _, worker := range w.workers {
 		wg.Add(1)
-		go func(wk WorkerInterface) { // Use the interface
+		go func(wk WorkerInterface) {
 			defer wg.Done()
 			if err := wk.Stop(context.Background()); err != nil {
 				errMu.Lock()

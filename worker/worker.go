@@ -157,14 +157,18 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 	}
 	defer hijackedResp.Close()
 
+	stdoutWriter := newChannelWriter(stdoutCh)
+	stderrWriter := newChannelWriter(stderrCh)
 	done := make(chan error)
 
 	go func() {
 		_, err := stdcopy.StdCopy(
-			newChannelWriter(stdoutCh),
-			newChannelWriter(stderrCh),
+			stdoutWriter,
+			stderrWriter,
 			hijackedResp.Reader,
 		)
+		stdoutWriter.Flush()
+		stderrWriter.Flush()
 		done <- err
 	}()
 
@@ -212,4 +216,11 @@ func (cw *channelWriter) Write(p []byte) (int, error) {
 		total += i + 1
 	}
 	return total, nil
+}
+
+func (cw *channelWriter) Flush() {
+	if cw.buf.Len() > 0 {
+		cw.ch <- cw.buf.String()
+		cw.buf.Reset()
+	}
 }

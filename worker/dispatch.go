@@ -2,42 +2,67 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/jonboulle/clockwork"
 )
 
 type JobDispatcherConfig struct {
 	JobChannel     <-chan types.JobRequest         // receive-only
 	ResultsChannel chan<- types.StreamingJobResult // send-only
-	WorkerManager  *WorkerManager                  // assumes non-nil
-	NetworkManager NetworkManager                  // assumes non-nil
-	Clock          Clock                           // Optional, for testing purposes
+	WorkerManager  WorkerManagerInterface          // assumes non-nil
+	NetworkManager NetworkManagerInterface         // assumes non-nil
+	Clock          clockwork.Clock                 // Optional, for testing purposes
+	FlushInterval  time.Duration                   // Optional, for testing purposes
 }
 
 type JobDispatcher struct {
 	jobChannel     <-chan types.JobRequest
 	resultsChannel chan<- types.StreamingJobResult
-	workerManager  *WorkerManager
-	networkManager NetworkManager
-	Clock          Clock
+	workerManager  WorkerManagerInterface
+	networkManager NetworkManagerInterface
+	Clock          clockwork.Clock
+	FlushInterval  time.Duration
+}
+
+type WorkerManagerInterface interface {
+	ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error)
+	ReleaseJob(jobId int) error
+	Shutdown() error
+}
+
+type NetworkManagerInterface interface {
+	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), err error)
 }
 
 func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
+	if config.Clock == nil {
+		config.Clock = clockwork.NewRealClock()
+	}
+	if config.FlushInterval == 0 {
+		config.FlushInterval = 200 * time.Millisecond
+	}
 	return &JobDispatcher{
 		jobChannel:     config.JobChannel,
 		resultsChannel: config.ResultsChannel,
 		workerManager:  config.WorkerManager,
 		networkManager: config.NetworkManager,
 		Clock:          config.Clock,
+		FlushInterval:  config.FlushInterval,
 	}
 }
 
 // Run starts the job dispatcher loop. It listens for incoming job requests
 // and processes each job in a separate goroutine.
 func (d *JobDispatcher) Run(ctx context.Context) {
+	if d.FlushInterval == 0 {
+		d.FlushInterval = 200 * time.Millisecond
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -45,6 +70,19 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 		case job := <-d.jobChannel:
 			go d.processJob(ctx, job)
 		}
+	}
+}
+
+// Utility function to send an error result for a job.
+func (d *JobDispatcher) sendJobError(job types.JobRequest, err error) {
+	d.resultsChannel <- types.StreamingJobResult{
+		JobId:         job.ProblemId,
+		UserId:        job.UserId,
+		SequenceIndex: -1, // signals end of stream
+		Events: []types.StreamingEvent{{
+			Kind:    "error",
+			Message: err.Error(),
+		}},
 	}
 }
 
@@ -56,13 +94,18 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	requiredWorkers := len(job.Code)
 	workers, err := d.requestWorkerReservation(ctx, job.ProblemId, requiredWorkers)
 	if err != nil {
+		d.sendJobError(job, err)
 		return
 	}
 
-	cleanupNetwork, err := d.networkManager.CreateAndConnect(ctx, workers)
+	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutLimit)*time.Second)
+	defer cancel()
+
+	cleanupNetwork, err := d.networkManager.CreateAndConnect(jobCtx, workers)
 	if err != nil {
 		log.Printf("Failed to setup network for job %d: %v", job.ProblemId, err)
 		_ = d.workerManager.ReleaseJob(job.ProblemId)
+		d.sendJobError(job, err)
 		return
 	}
 	defer cleanupNetwork()
@@ -75,18 +118,27 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		clock:          d.Clock,
 	}
 
-	cleanupTimedFlush := ea.startPeriodicFlush(ctx, job, 200*time.Millisecond)
+	cleanupTimedFlush := ea.startPeriodicFlush(jobCtx, job, d.FlushInterval)
 	defer cleanupTimedFlush()
 
 	for i, worker := range workers {
-		ea.startWorkerLogStreaming(ctx, worker, job.Code[i])
+		ea.startWorkerLogStreaming(jobCtx, worker, job.Code[i], cancel)
 	}
 
 	ea.wg.Wait()
-	ea.flushRemainingEvents(job)
+
+	if jobCtx.Err() != nil {
+		if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+			d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
+		} else {
+			d.sendJobError(job, jobCtx.Err())
+		}
+	} else {
+		ea.flushRemainingEvents(job)
+	}
 
 	if err = d.workerManager.ReleaseJob(job.ProblemId); err != nil {
-		log.Fatalf("Job has been released twice, should never happen")
+		d.sendJobError(job, err)
 	}
 
 	log.Printf("Finished job %v", job.ProblemId)
@@ -115,11 +167,11 @@ type EventAggregator struct {
 	muEvents       sync.Mutex
 	resultsChannel chan<- types.StreamingJobResult
 	eventBuf       []types.StreamingEvent
-	clock          Clock
+	clock          clockwork.Clock
 }
 
 // startWorkerLogStreaming streams logs from a worker and appends them to the event buffer.
-func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker WorkerInterface, code string) {
+func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker WorkerInterface, code string, cancelJob context.CancelFunc) {
 	stdoutCh := make(chan string, 10)
 	stderrCh := make(chan string, 10)
 
@@ -145,14 +197,11 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker Wo
 	// Run the code in the worker
 	go func(w WorkerInterface, code string, id string) {
 		defer e.wg.Done()
-
-		execCtx, cancelExec := context.WithTimeout(ctx, 120*time.Second)
-		defer cancelExec()
-
-		if err := w.ExecuteCode(execCtx, code, stdoutCh, stderrCh); err != nil {
+		if err := w.ExecuteCode(ctx, code, stdoutCh, stderrCh); err != nil {
 			e.muEvents.Lock()
-			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "error", Message: err.Error()})
+			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "error", Message: err.Error(), WorkerId: id})
 			e.muEvents.Unlock()
+			cancelJob()
 		}
 
 		close(stdoutCh)
@@ -170,7 +219,7 @@ func (e *EventAggregator) startPeriodicFlush(ctx context.Context, job types.JobR
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C():
+			case <-ticker.Chan():
 				e.muEvents.Lock()
 				if len(e.eventBuf) > 0 {
 					eventsCopy := append([]types.StreamingEvent(nil), e.eventBuf...)

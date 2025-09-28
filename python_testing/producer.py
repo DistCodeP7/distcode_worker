@@ -158,7 +158,8 @@ for i, code in enumerate(go_snippets, start=1):
     job = {
         "ProblemId": i,
         "Code": code,
-        "UserId": 1
+        "UserId": 1,
+        "TimeoutLimit": 30  # seconds
 
     }
     body = json.dumps(job)
