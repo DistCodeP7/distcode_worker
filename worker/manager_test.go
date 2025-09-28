@@ -41,7 +41,10 @@ func (m *MockWorker) DisconnectFromNetwork(ctx context.Context, networkName stri
 	return nil
 }
 
+const MockOutput = "Mock output"
+
 func (m *MockWorker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrCh chan string) error {
+	stdoutCh <- MockOutput
 	return nil
 }
 
@@ -51,9 +54,9 @@ func (m *MockWorker) WasStopped() bool {
 	return m.stopCalled
 }
 
-func createMockWorkers(count int) []WorkerInterface {
+func CreateMockWorkers(count int) []WorkerInterface {
 	workers := make([]WorkerInterface, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		workers[i] = &MockWorker{id: fmt.Sprintf("W%d", i+1)}
 	}
 	return workers
@@ -62,7 +65,7 @@ func createMockWorkers(count int) []WorkerInterface {
 func TestNewWorkerManager(t *testing.T) {
 
 	t.Run("Success", func(t *testing.T) {
-		workers := createMockWorkers(3)
+		workers := CreateMockWorkers(3)
 		manager, err := NewWorkerManager(workers)
 		assert.NoError(t, err)
 		assert.NotNil(t, manager)
@@ -85,7 +88,7 @@ func TestNewWorkerManager(t *testing.T) {
 }
 
 func TestReserveWorkers(t *testing.T) {
-	workers := createMockWorkers(5)
+	workers := CreateMockWorkers(5)
 	manager, _ := NewWorkerManager(workers)
 	jobID := 101
 
@@ -111,7 +114,7 @@ func TestReserveWorkers(t *testing.T) {
 }
 
 func TestReleaseJob(t *testing.T) {
-	workers := createMockWorkers(5)
+	workers := CreateMockWorkers(5)
 	manager, _ := NewWorkerManager(workers)
 	jobID := 201
 
@@ -145,7 +148,7 @@ func TestReleaseJob(t *testing.T) {
 }
 
 func TestShutdown(t *testing.T) {
-	workers := createMockWorkers(3)
+	workers := CreateMockWorkers(3)
 
 	mockWorkers := []*MockWorker{workers[0].(*MockWorker), workers[1].(*MockWorker), workers[2].(*MockWorker)}
 	manager, _ := NewWorkerManager(workers)
@@ -163,7 +166,7 @@ func TestShutdown(t *testing.T) {
 	})
 
 	t.Run("ErrorPropagation", func(t *testing.T) {
-		workers := createMockWorkers(3)
+		workers := CreateMockWorkers(3)
 		mockWorkers := []*MockWorker{
 			workers[0].(*MockWorker),
 			workers[1].(*MockWorker),
@@ -181,7 +184,7 @@ func TestShutdown(t *testing.T) {
 	})
 
 	t.Run("ConcurrencyTest", func(t *testing.T) {
-		workers := createMockWorkers(5)
+		workers := CreateMockWorkers(5)
 		manager, _ := NewWorkerManager(workers)
 
 		manager.ReserveWorkers(301, 2)

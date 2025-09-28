@@ -7,6 +7,7 @@ import (
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
+	"github.com/jonboulle/clockwork"
 )
 
 func main() {
@@ -52,7 +53,7 @@ func main() {
 		ResultsChannel: resultsCh,
 		WorkerManager:  wm,
 		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
-		Clock:          worker.RealClock{},
+		Clock:          clockwork.NewRealClock(),
 	})
 
 	go dispatcher.Run(appResources.Ctx)
