@@ -32,6 +32,7 @@ type JobDispatcher struct {
 
 type WorkerManagerInterface interface {
 	ListWorkers() []string
+	ListIdleWorkers() []string
 	ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error)
 	ReleaseJob(jobId int) error
 	Shutdown() error

@@ -21,7 +21,7 @@ func (s *Server) getAllWorkers(c *gin.Context) {
 func (s *Server)getIdleWorkers(c *gin.Context) {
 	// Placeholder implementation
 	c.JSON(200, gin.H{
-		"idle_workers": []string{"worker1"},
+		"idle_workers": s.jobDispatcher.WorkerManager().ListIdleWorkers(),
 	})
 }
 
@@ -34,7 +34,7 @@ func StartHttpServer(jd *worker.JobDispatcher) *Server {
 	s.registerRoutes()
 	
 	go func() {
-		if err := s.router.Run(":8080"); err != nil {
+		if err := s.router.Run("localhost:8080"); err != nil {
 			panic(err)
 		}
 	}()

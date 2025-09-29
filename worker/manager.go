@@ -44,6 +44,16 @@ func (w *WorkerManager) ListWorkers() []string {
 	return workerIDs
 }
 
+func (w *WorkerManager) ListIdleWorkers() []string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	idleWorkerIDs := make([]string, 0, len(w.idleWorkers))
+	for _, worker := range w.idleWorkers {
+		idleWorkerIDs = append(idleWorkerIDs, worker.ID())
+	}
+	return idleWorkerIDs
+}
+
 // ReserveWorkers now returns a slice of the interface type.
 func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error) {
 	w.mu.Lock()
