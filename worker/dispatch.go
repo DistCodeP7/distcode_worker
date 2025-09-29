@@ -31,6 +31,7 @@ type JobDispatcher struct {
 }
 
 type WorkerManagerInterface interface {
+	ListWorkers() []string
 	ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error)
 	ReleaseJob(jobId int) error
 	Shutdown() error
@@ -48,6 +49,10 @@ func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
 		networkManager: config.NetworkManager,
 		Clock:          config.Clock,
 	}
+}
+
+func (d *JobDispatcher) WorkerManager() WorkerManagerInterface {
+	return d.workerManager
 }
 
 // Run starts the job dispatcher loop. It listens for incoming job requests

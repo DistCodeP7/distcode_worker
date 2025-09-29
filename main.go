@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github.com/DistCodeP7/distcode_worker/api"
 	"github.com/DistCodeP7/distcode_worker/mq"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
@@ -33,16 +34,16 @@ func main() {
 		}
 	}()
 
-	workers := make([]worker.WorkerInterface, numWorkers)
+	Workers := make([]worker.WorkerInterface, numWorkers)
 	for i := range numWorkers {
 		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
 		if err != nil {
 			log.Fatalf("Failed to create worker: %v", err)
 		}
-		workers[i] = worker
+		Workers[i] = worker
 	}
 
-	wm, err := worker.NewWorkerManager(workers)
+	wm, err := worker.NewWorkerManager(Workers)
 
 	if err != nil {
 		log.Fatalf("Failed to create worker manager: %v", err)
@@ -58,6 +59,8 @@ func main() {
 
 	go dispatcher.Run(appResources.Ctx)
 	go mq.PublishJobResults(appResources.Ctx, resultsCh)
+
+	api.StartHttpServer(dispatcher)
 
 	<-appResources.Ctx.Done()
 	if err := wm.Shutdown(); err != nil {
