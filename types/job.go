@@ -1,21 +1,16 @@
 package types
 
-import (
-	"context"
-	"sync"
-
-	"github.com/docker/docker/client"
-)
-
 type JobRequest struct {
-	ProblemId int
-	Code      string
-	UserId    int
+	ProblemId    int
+	Code         []string
+	UserId       int
+	TimeoutLimit int // in seconds
 }
 
 type StreamingEvent struct {
-	Kind    string // "stdout" | "stderr" | "error"
-	Message string
+	Kind     string // "stdout" | "stderr" | "error"
+	Message  string
+	WorkerId string
 }
 
 type StreamingJobResult struct {
@@ -23,12 +18,4 @@ type StreamingJobResult struct {
 	Events        []StreamingEvent
 	UserId        int
 	SequenceIndex int
-}
-
-type WorkerConfig struct {
-	Ctx       context.Context
-	DockerCli *client.Client
-	Wg        *sync.WaitGroup
-	Jobs      <-chan JobRequest
-	Results   chan<- StreamingJobResult
 }

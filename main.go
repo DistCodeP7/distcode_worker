@@ -2,12 +2,12 @@ package main
 
 import (
 	"log"
-	"sync"
 
 	"github.com/DistCodeP7/distcode_worker/mq"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
+	"github.com/jonboulle/clockwork"
 )
 
 func main() {
@@ -22,33 +22,47 @@ func main() {
 	defer appResources.Cancel()
 	defer appResources.DockerCli.Close()
 
-	jobs_ch := make(chan types.JobRequest, jobsCapacity)
-	results_ch := make(chan types.StreamingJobResult, jobsCapacity)
-	var wg sync.WaitGroup
+	jobsCh := make(chan types.JobRequest, jobsCapacity)
+	resultsCh := make(chan types.StreamingJobResult, jobsCapacity)
+	defer close(resultsCh)
 
 	// Start a goroutine to receive jobs from RabbitMQ
 	go func() {
-		if err := mq.StartJobConsumer(appResources.Ctx, jobs_ch); err != nil {
+		if err := mq.StartJobConsumer(appResources.Ctx, jobsCh); err != nil {
 			log.Fatalf("MQ error: %v", err)
 		}
 	}()
 
-	workerConfig := types.WorkerConfig{
-		Ctx:       appResources.Ctx,
-		DockerCli: appResources.DockerCli,
-		Wg:        &wg,
-		Jobs:      jobs_ch,
-		Results:   results_ch,
+	workers := make([]worker.WorkerInterface, numWorkers)
+	for i := range numWorkers {
+		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
+		if err != nil {
+			log.Fatalf("Failed to create worker: %v", err)
+		}
+		workers[i] = worker
 	}
 
-	log.Printf("Starting %d workers...", numWorkers)
-	for i := 1; i <= numWorkers; i++ {
-		wg.Add(1)
-		go worker.StartWorker(&workerConfig, i)
+	wm, err := worker.NewWorkerManager(workers)
+
+	if err != nil {
+		log.Fatalf("Failed to create worker manager: %v", err)
 	}
 
-	go mq.PublishJobResults(appResources.Ctx, results_ch)
-	wg.Wait()
-	close(results_ch)
+	dispatcher := worker.NewJobDispatcher(worker.JobDispatcherConfig{
+		JobChannel:     jobsCh,
+		ResultsChannel: resultsCh,
+		WorkerManager:  wm,
+		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
+		Clock:          clockwork.NewRealClock(),
+	})
+
+	go dispatcher.Run(appResources.Ctx)
+	go mq.PublishJobResults(appResources.Ctx, resultsCh)
+
+	<-appResources.Ctx.Done()
+	if err := wm.Shutdown(); err != nil {
+		log.Printf("Error shutting down workers: %v", err)
+	}
+
 	log.Println("All workers have finished. Exiting.")
 }

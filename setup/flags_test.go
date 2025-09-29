@@ -9,14 +9,16 @@ import (
 func TestParseFlagsDefualts(t *testing.T) {
 	image, workers, capacity := ParseFlags()
 
+	expectedWorkers := 4
+
 	if image != "golang:1.25" {
 		t.Errorf("Expected default image 'golang:1.25', got '%s'", image)
 	}
-	if workers != 4 {
+	if workers != expectedWorkers {
 		t.Errorf("Expected default workers 4, got %d", workers)
 	}
-	if capacity != 30 {
-		t.Errorf("Expected default capacity 30, got %d", capacity)
+	if capacity != expectedWorkers*2 {
+		t.Errorf("Expected default capacity 2 * %d, got %d", expectedWorkers, capacity)
 	}
 }
 

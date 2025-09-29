@@ -9,59 +9,65 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/google/uuid"
 )
 
 type Worker struct {
-	id          string
-	dockerCli   *client.Client
 	containerID string
+	dockerCli   *client.Client
 	hostPath    string
 }
 
-func New(ctx context.Context, cli *client.Client) (*Worker, error) {
-	log.Println("Initializing a new worker...")
-	id := uuid.NewString()
+type WorkerInterface interface {
+	ID() string
+	ConnectToNetwork(ctx context.Context, networkName, alias string) error
+	DisconnectFromNetwork(ctx context.Context, networkName string) error
+	Stop(ctx context.Context) error
+	ExecuteCode(ctx context.Context, code string, stdoutCh, stderrCh chan string) error
+}
 
-	hostPath, err := os.MkdirTemp("", "docker-worker-"+id)
+var _ WorkerInterface = (*Worker)(nil)
+
+func NewWorker(ctx context.Context, cli *client.Client, workerImageName string) (*Worker, error) {
+	log.Println("Initializing a new worker...")
+
+	hostPath, err := os.MkdirTemp("", "docker-worker-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
 	containerConfig := &container.Config{
-		Image:      "golang:1.25",
+		Image:      workerImageName,
 		Cmd:        []string{"sleep", "infinity"},
 		Tty:        false,
 		WorkingDir: "/app",
 	}
 
 	hostConfig := &container.HostConfig{
-		NetworkMode: "none",
 		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeVolume,
-				Source: "go-build-cache",
-				Target: "/root/.cache/go-build",
-				ReadOnly: true,
-        	},
 			{
 				Type:   mount.TypeBind,
 				Source: hostPath,
 				Target: "/app",
 			},
-			
+			{
+				Type:   mount.TypeVolume,
+				Source: "go-build-cache",
+				Target: "/root/.cache/go-build",
+			},
 		},
 		Resources: container.Resources{
 			CPUShares:      512,
-			NanoCPUs:       500_000_000,       // 0.5 CPU
-			Memory:         256 * 1024 * 1024, // 256MB
-			PidsLimit:      ptrInt64(50),      // max 50 processes
-			MemorySwap:     512 * 1024 * 1024, // 512MB - gVisor needs swap > memory
-			OomKillDisable: ptrBool(false),    // enable OOM killer
+			NanoCPUs:       500_000_000,          // 0.5 CPU
+			Memory:         256 * 1024 * 1024,    // 256MB
+			PidsLimit:      utils.PtrInt64(50),   // max 50 processes
+			MemorySwap:     512 * 1024 * 1024,    // 512MB - gVisor needs swap > memory
+			OomKillDisable: utils.PtrBool(false), // enable OOM killer
 			Ulimits: []*container.Ulimit{
 				{Name: "cpu", Soft: 30, Hard: 30},        // 30s CPU limit
 				{Name: "nofile", Soft: 1024, Hard: 1024}, // max open files
@@ -69,8 +75,7 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 		},
 	}
 
-	log.Println("Creating container...")
-	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "worker-"+id)
+	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "")
 	if err != nil {
 		os.RemoveAll(hostPath)
 		return nil, fmt.Errorf("failed to create container: %w", err)
@@ -83,23 +88,45 @@ func New(ctx context.Context, cli *client.Client) (*Worker, error) {
 	}
 
 	worker := &Worker{
-		id:          id,
-		dockerCli:   cli,
 		containerID: resp.ID,
+		dockerCli:   cli,
 		hostPath:    hostPath,
 	}
 
-	log.Printf("Worker %s initialized with container %s", worker.id, worker.containerID[:12])
+	log.Printf("Worker initialized with container %s", worker.containerID[:12])
 	return worker, nil
 }
 
-func ptrBool(b bool) *bool {
-	return &b
+func (w *Worker) ID() string {
+	return w.containerID
 }
 
-func ptrInt64(i int) *int64 {
-	v := int64(i)
-	return &v
+func (w *Worker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
+	return w.dockerCli.NetworkConnect(ctx, networkName, w.containerID, &network.EndpointSettings{
+		Aliases: []string{alias},
+	})
+}
+
+func (w *Worker) DisconnectFromNetwork(ctx context.Context, networkName string) error {
+	return w.dockerCli.NetworkDisconnect(ctx, networkName, w.containerID, true)
+}
+
+func (w *Worker) Stop(ctx context.Context) error {
+	log.Printf("Stopping and removing container %s", w.containerID[:12])
+
+	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: nil}); err != nil {
+		log.Printf("Warning: failed to gracefully stop container %s: %v", w.containerID[:12], err)
+	}
+
+	if err := w.dockerCli.ContainerRemove(ctx, w.containerID, container.RemoveOptions{Force: true}); err != nil {
+		return fmt.Errorf("failed to remove container: %w", err)
+	}
+
+	if err := os.RemoveAll(w.hostPath); err != nil {
+		return fmt.Errorf("failed to remove host path: %w", err)
+	}
+
+	return nil
 }
 
 func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrCh chan string) error {
@@ -130,23 +157,24 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 	}
 	defer hijackedResp.Close()
 
+	stdoutWriter := newChannelWriter(stdoutCh)
+	stderrWriter := newChannelWriter(stderrCh)
 	done := make(chan error)
 
 	go func() {
 		_, err := stdcopy.StdCopy(
-			newChannelWriter(stdoutCh),
-			newChannelWriter(stderrCh),
+			stdoutWriter,
+			stderrWriter,
 			hijackedResp.Reader,
 		)
-		close(stdoutCh)
-		close(stderrCh)
+		stdoutWriter.Flush()
+		stderrWriter.Flush()
 		done <- err
 	}()
 
 	if err := <-done; err != nil {
 		return fmt.Errorf("failed to stream output: %w", err)
 	}
-
 
 	inspectResp, err := w.dockerCli.ContainerExecInspect(containerCtx, execID.ID)
 	if err != nil {
@@ -166,10 +194,7 @@ type channelWriter struct {
 }
 
 func newChannelWriter(ch chan string) *channelWriter {
-	cw := channelWriter{
-		ch: ch,
-	}
-	return &cw
+	return &channelWriter{ch: ch}
 }
 
 // Write implements the io.Writer interface for channelWriter.
@@ -193,21 +218,9 @@ func (cw *channelWriter) Write(p []byte) (int, error) {
 	return total, nil
 }
 
-func (w *Worker) Stop(ctx context.Context) error {
-	log.Printf("Stopping worker %s and removing container %s", w.id, w.containerID[:12])
-
-	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: nil}); err != nil {
-		log.Printf("Warning: failed to gracefully stop container %s: %v", w.containerID[:12], err)
+func (cw *channelWriter) Flush() {
+	if cw.buf.Len() > 0 {
+		cw.ch <- cw.buf.String()
+		cw.buf.Reset()
 	}
-
-	err := w.dockerCli.ContainerRemove(ctx, w.containerID, container.RemoveOptions{Force: true})
-	if err != nil {
-		return fmt.Errorf("failed to remove container: %w", err)
-	}
-
-	if err := os.RemoveAll(w.hostPath); err != nil {
-		return fmt.Errorf("failed to remove host path: %w", err)
-	}
-
-	return nil
 }
