@@ -198,6 +198,7 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker Wo
 	go func(w WorkerInterface, code string, id string) {
 		defer e.wg.Done()
 		if err := w.ExecuteCode(ctx, code, stdoutCh, stderrCh); err != nil {
+			log.Printf("Worker %s execution error: %v", id, err)
 			e.muEvents.Lock()
 			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "error", Message: err.Error(), WorkerId: id})
 			e.muEvents.Unlock()

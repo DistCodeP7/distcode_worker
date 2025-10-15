@@ -53,7 +53,7 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string) 
 			{
 				Type:   mount.TypeBind,
 				Source: hostPath,
-				Target: "/app",
+				Target: "/tmp/dsnet-code",
 			},
 			{
 				Type:   mount.TypeVolume,
@@ -136,9 +136,10 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 	}
 
 	execConfig := container.ExecOptions{
-		Cmd:          []string{"go", "run", "main.go"},
+		Cmd:          []string{"go", "run", "/tmp/dsnet-code/main.go"},
 		AttachStdout: true,
 		AttachStderr: true,
+		WorkingDir:   "/app",
 	}
 
 	execID, err := w.dockerCli.ContainerExecCreate(ctx, w.containerID, execConfig)
