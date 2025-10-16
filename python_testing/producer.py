@@ -127,10 +127,36 @@ func main() {
     fmt.Println("Fib(38) =", fib(38))
 }"""],
  ]
+
+
+dsnet = [
+    """
+ package main
+
+import (
+    "log"
+    // Import the package and give it an alias to access its exported functions
+    dsnet "github.com/distcode/dsnet/dsnet" 
+)
+
+func main() {
+    log.Println("Attempting to connect...")
+    // Use the package-qualified function name: dsnet.Connect
+    _, err := dsnet.Connect("localhost:50051", "nodeA")
+    
+    if err != nil {
+        return
+    }
+    log.Println("Successfully connected or connection process finished.")
+}
+    """
+]
+
 go_snippets = [
    #networked_example,
-   [ 'package main\nimport "fmt"\nfunc main() { fmt.Println("Hello, world!") }', 'package main\nimport "fmt"\nfunc main() { fmt.Println("World, world!") }'],
-   [ 'package main\nimport ("fmt"; "time")\nfunc main() { for i := 1; i <= 5; i++ { fmt.Println("Count:", i); time.Sleep(1 * time.Second) } }', 'package main\nimport "fmt"\nfunc main() { for i := 1; i <= 3; i++ { fmt.Println("Number:", i) } }'],
+   dsnet,
+   #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println("Hello, world!") }', 'package main\nimport "fmt"\nfunc main() { fmt.Println("World, world!") }'],
+   #[ 'package main\nimport ("fmt"; "time")\nfunc main() { for i := 1; i <= 5; i++ { fmt.Println("Count:", i); time.Sleep(1 * time.Second) } }', 'package main\nimport "fmt"\nfunc main() { for i := 1; i <= 3; i++ { fmt.Println("Number:", i) } }'],
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println(2 + 2) }'],
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println("Go worker test") }'],
    #[ 'package main\nimport "math"\nimport "fmt"\nfunc main() { fmt.Println(math.Sqrt(16)) }'],
