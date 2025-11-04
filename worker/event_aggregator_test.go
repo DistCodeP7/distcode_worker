@@ -36,7 +36,7 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 
 	select {
 	case result := <-resultsChan:
-		if result.JobId != job.ProblemId || result.UserId != job.UserId {
+		if result.ProblemId != job.ProblemId || result.UserId != job.UserId {
 			t.Errorf("Unexpected job result: %+v", result)
 		}
 		if len(result.Events) != 1 {
@@ -63,7 +63,7 @@ func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
 
 	select {
 	case result := <-resultsChan:
-		if result.JobId != job.ProblemId || result.UserId != job.UserId {
+		if result.ProblemId != job.ProblemId || result.UserId != job.UserId {
 			t.Errorf("Unexpected job result: %+v", result)
 		}
 		if len(result.Events) != 0 {
@@ -85,7 +85,7 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 
 	ctx := t.Context()
 	interval := 10 * time.Millisecond
-	cancel := aggregator.startPeriodicFlush(ctx, job, interval)
+	cancel, _ := aggregator.startPeriodicFlush(ctx, job, interval)
 	defer cancel()
 
 	aggregator.muEvents.Lock()
@@ -99,7 +99,7 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 
 	select {
 	case result := <-resultsChan:
-		if result.JobId != job.ProblemId || result.UserId != job.UserId {
+		if result.ProblemId != job.ProblemId || result.UserId != job.UserId {
 			t.Errorf("Unexpected job result: %+v", result)
 		}
 		if len(result.Events) != 1 {
@@ -124,7 +124,7 @@ func TestPeriodicFlushWithNoMessage(t *testing.T) {
 
 	ctx := t.Context()
 	interval := 10 * time.Millisecond
-	cancel := aggregator.startPeriodicFlush(ctx, job, interval)
+	cancel, _ := aggregator.startPeriodicFlush(ctx, job, interval)
 	defer cancel()
 	clock.Advance(interval + 1*time.Millisecond)
 	select {
@@ -180,7 +180,7 @@ func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 
 	ctx := t.Context()
 	interval := 10 * time.Millisecond
-	cancel := aggregator.startPeriodicFlush(ctx, job, interval)
+	cancel, _ := aggregator.startPeriodicFlush(ctx, job, interval)
 	defer cancel()
 
 	worker := &fakeWorker{

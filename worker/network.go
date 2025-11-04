@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -44,10 +45,19 @@ func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers [
 
 	cleanup := func() {
 		log.Printf("Cleaning up network %s", networkName)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
 		for _, worker := range workers {
-			_ = worker.DisconnectFromNetwork(ctx, networkName)
+			if err := worker.DisconnectFromNetwork(cleanupCtx, networkName); err != nil {
+				log.Printf("Error during worker network disconnect: %v", err)
+			}
 		}
-		_ = dnm.dockerCli.NetworkRemove(ctx, networkName)
+
+		if err := dnm.dockerCli.NetworkRemove(cleanupCtx, networkName); err != nil {
+			log.Printf("Error removing network %s: %v", networkName, err)
+		}
+
 	}
 
 	return cleanup, nil

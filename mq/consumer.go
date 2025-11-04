@@ -37,15 +37,44 @@ func StartJobConsumer(ctx context.Context, jobs chan<- types.JobRequest) error {
 		})
 }
 
-func handleDelivery(d amqp.Delivery, jobs chan<- types.JobRequest) {
+func StartJobCanceller(ctx context.Context, jobs chan<- types.CancelJobRequest) error {
+	queueName := "jobs_cancel"
+	return reconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
+		func(ch *amqp.Channel) error {
+			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
+			return err
+		},
+		func(ch *amqp.Channel) error {
+			msgs, err := ch.Consume(queueName, "", true, false, false, false, nil)
+			if err != nil {
+				return err
+			}
+			for {
+				select {
+				case d, ok := <-msgs:
+					if !ok {
+						return fmt.Errorf("message channel closed")
+					}
+					handleDelivery(d, jobs)
+				case <-ctx.Done():
+					close(jobs)
+					return nil
+				}
+			}
+		})
+}
+
+func handleDelivery[T any](d amqp.Delivery, out chan<- T) {
 	if d.Body == nil {
 		return
 	}
-	var job types.JobRequest
-	if err := json.Unmarshal(d.Body, &job); err != nil {
-		log.Printf("Invalid job message: %s", d.Body)
+
+	var msg T
+	if err := json.Unmarshal(d.Body, &msg); err != nil {
+		log.Printf("Invalid message: %s", d.Body)
 		return
 	}
-	jobs <- job
-	log.Printf("Received job %d from MQ", job.ProblemId)
+
+	out <- msg
+	log.Printf("Received %T from MQ", msg)
 }

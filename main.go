@@ -24,11 +24,20 @@ func main() {
 
 	jobsCh := make(chan types.JobRequest, jobsCapacity)
 	resultsCh := make(chan types.StreamingJobResult, jobsCapacity)
+	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
+
 	defer close(resultsCh)
 
 	// Start a goroutine to receive jobs from RabbitMQ
 	go func() {
 		if err := mq.StartJobConsumer(appResources.Ctx, jobsCh); err != nil {
+			log.Fatalf("MQ error: %v", err)
+		}
+	}()
+
+	// Start a goroutine to receive cancel requests from RabbitMQ
+	go func() {
+		if err := mq.StartJobCanceller(appResources.Ctx, cancelJobCh); err != nil {
 			log.Fatalf("MQ error: %v", err)
 		}
 	}()
@@ -50,6 +59,7 @@ func main() {
 
 	dispatcher := worker.NewJobDispatcher(worker.JobDispatcherConfig{
 		JobChannel:     jobsCh,
+		CancelJobChan:  cancelJobCh,
 		ResultsChannel: resultsCh,
 		WorkerManager:  wm,
 		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),

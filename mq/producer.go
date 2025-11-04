@@ -37,7 +37,7 @@ func PublishJobResults(ctx context.Context, results <-chan types.StreamingJobRes
 					if err != nil {
 						return err // triggers reconnect
 					}
-					log.Printf("Published result for job %d", result.JobId)
+					log.Printf("Published result for job %d", result.ProblemId)
 				case <-ctx.Done():
 					return nil
 				}
