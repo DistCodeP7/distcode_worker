@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/docker/docker/api/types/container"
@@ -147,9 +146,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 		return fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
-	containerCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	hijackedResp, err := w.dockerCli.ContainerExecAttach(containerCtx, execID.ID, container.ExecStartOptions{
+	hijackedResp, err := w.dockerCli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{
 		Detach: false,
 		Tty:    false,
 	})
@@ -160,7 +157,7 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 
 	stdoutWriter := newChannelWriter(stdoutCh)
 	stderrWriter := newChannelWriter(stderrCh)
-	done := make(chan error)
+	done := make(chan error, 1)
 
 	go func() {
 		_, err := stdcopy.StdCopy(
@@ -173,11 +170,17 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 		done <- err
 	}()
 
-	if err := <-done; err != nil {
-		return fmt.Errorf("failed to stream output: %w", err)
+	select {
+	case <-ctx.Done():
+		log.Printf("Job cancelled, stopping current execution in container %s", w.containerID)
+		return ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("failed to stream output: %w", err)
+		}
 	}
 
-	inspectResp, err := w.dockerCli.ContainerExecInspect(containerCtx, execID.ID)
+	inspectResp, err := w.dockerCli.ContainerExecInspect(ctx, execID.ID)
 	if err != nil {
 		return fmt.Errorf("failed to inspect exec instance: %w", err)
 	}

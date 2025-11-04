@@ -27,7 +27,7 @@ func TestSendJobErrorResult(t *testing.T) {
 	result := <-resultsChan
 	assert.Equal(t, "error", result.Events[0].Kind)
 	assert.Equal(t, "Test error", result.Events[0].Message)
-	assert.Equal(t, 1, result.JobId)
+	assert.Equal(t, 1, result.ProblemId)
 	assert.Equal(t, 42, result.UserId)
 	assert.Equal(t, -1, result.SequenceIndex)
 }
@@ -238,7 +238,7 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 		t.Fatal("timed out waiting for the first (periodic) result")
 	}
 
-	assert.Equal(t, 1, firstResult.JobId)
+	assert.Equal(t, 1, firstResult.ProblemId)
 	assert.Equal(t, 0, firstResult.SequenceIndex)
 	assert.Len(t, firstResult.Events, 1)
 	assert.Equal(t, "periodic flush message", firstResult.Events[0].Message)
@@ -258,6 +258,6 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for the final result")
 	}
-	assert.Equal(t, 1, finalResult.JobId)
+	assert.Equal(t, 1, finalResult.ProblemId)
 	assert.Equal(t, -1, finalResult.SequenceIndex, "Final message must have SequenceIndex -1")
 }
