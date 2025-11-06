@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.StreamingJobResult) *EventAggregator {
+func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.StreamingJobEvent) *EventAggregator {
 	return &EventAggregator{
 		resultsChannel: resultsChannel,
 		clock:          clock,
@@ -19,7 +19,7 @@ func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.Stream
 }
 
 func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
 	aggregator := newTestAggregator(clock, resultsChan)
 	job := types.JobRequest{
@@ -51,7 +51,7 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 }
 
 func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
 	aggregator := newTestAggregator(clock, resultsChan)
 	job := types.JobRequest{
@@ -75,7 +75,7 @@ func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
 }
 
 func TestPeriodicFlushWithMessage(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
 	aggregator := newTestAggregator(clock, resultsChan)
 	job := types.JobRequest{
@@ -114,7 +114,7 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 }
 
 func TestPeriodicFlushWithNoMessage(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
 	aggregator := newTestAggregator(clock, resultsChan)
 	job := types.JobRequest{
@@ -169,7 +169,7 @@ func (w *fakeWorker) Stop(ctx context.Context) error {
 }
 
 func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 2)
+	resultsChan := make(chan types.StreamingJobEvent, 2)
 	clock := clockwork.NewFakeClock()
 	aggregator := newTestAggregator(clock, resultsChan)
 
@@ -191,7 +191,7 @@ func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 	}
 
 	code := "print('Hello, World!')"
-	aggregator.startWorkerLogStreaming(ctx, worker, code, nil)
+	aggregator.startWorkerLogStreaming(ctx, worker, code, nil, job)
 
 	assert.Eventually(t, func() bool {
 		aggregator.muEvents.Lock()

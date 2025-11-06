@@ -10,7 +10,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func Publish[T any](ctx context.Context, data T, queueName string) error {
+func Publish(ctx context.Context, data types.StreamingJobEvent, queueName string) error {
 	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
 		func(ch *amqp.Channel) error {
 			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
@@ -30,8 +30,15 @@ func Publish[T any](ctx context.Context, data T, queueName string) error {
 		})
 }
 
-func PublishJobResults(ctx context.Context, results <-chan types.StreamingJobResult) error {
-	queueName := "results"
+type EventType string
+
+const (
+	EventTypeResults EventType = "results"
+	EventTypeMetrics EventType = "metrics"
+)
+
+func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-chan types.StreamingJobEvent) error {
+	queueName := string(eventType)
 	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
 		func(ch *amqp.Channel) error {
 			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
@@ -40,35 +47,23 @@ func PublishJobResults(ctx context.Context, results <-chan types.StreamingJobRes
 		func(ch *amqp.Channel) error {
 			for {
 				select {
-				case result, ok := <-results:
+				case event, ok := <-events:
 					if !ok {
 						return nil
 					}
-					if err := Publish(ctx, result, queueName); err != nil {
+					if err := Publish(ctx, event, queueName); err != nil {
 						log.Printf("Publish error: %v", err)
 						return err // triggers reconnect
 					}
-					log.Printf("Published result for job %d", result.ProblemId)
+					switch eventType {
+					case EventTypeResults:
+						log.Printf("Published result for job %d", event.ProblemId)
+					case EventTypeMetrics:
+						log.Printf("Published metric for job %d", event.ProblemId)
+					}
 				case <-ctx.Done():
 					return nil
 				}
 			}
-		})
-}
-
-func PublishMetrics(ctx context.Context, metric types.Metric) error {
-	queueName := "metrics"
-	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
-		func(ch *amqp.Channel) error {
-			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
-			return err
-		},
-		func(ch *amqp.Channel) error {
-			if err := Publish(ctx, metric, queueName); err != nil {
-				log.Printf("Publish error: %v", err)
-				return err
-			}
-			log.Printf("Published metric for job %s", metric.JobID)
-			return nil
 		})
 }

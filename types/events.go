@@ -1,6 +1,10 @@
 package types
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type CancelJobRequest struct {
 	JobUID uuid.UUID
@@ -14,13 +18,20 @@ type JobRequest struct {
 	TimeoutLimit int // in seconds
 }
 
-type StreamingEvent struct {
-	Kind     string // "stdout" | "stderr" | "error" | "cancel"
-	Message  string
-	WorkerId string
+type MetricPayload struct {
+	StartTime time.Time     `json:"start_time"`
+	EndTime   time.Time     `json:"end_time"`
+	DeltaTime time.Duration `json:"delta_time"`
 }
 
-type StreamingJobResult struct {
+type StreamingEvent struct {
+	Kind     string // "stdout" | "stderr" | "error" | "cancel" | "metric"
+	WorkerId string `json:"worker_id"`
+	Message  string
+	Metric   *MetricPayload
+}
+
+type StreamingJobEvent struct {
 	JobUID        uuid.UUID `json:"job_uid"`
 	ProblemId     int
 	Events        []StreamingEvent

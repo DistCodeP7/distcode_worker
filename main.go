@@ -23,10 +23,12 @@ func main() {
 	defer appResources.DockerCli.Close()
 
 	jobsCh := make(chan types.JobRequest, jobsCapacity)
-	resultsCh := make(chan types.StreamingJobResult, jobsCapacity)
+	resultsCh := make(chan types.StreamingJobEvent, jobsCapacity)
+	metricsCh := make(chan types.StreamingJobEvent, jobsCapacity) // find a better value
 	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
 
 	defer close(resultsCh)
+	defer close(metricsCh)
 
 	// Start a goroutine to receive jobs from RabbitMQ
 	go func() {
@@ -61,13 +63,24 @@ func main() {
 		JobChannel:     jobsCh,
 		CancelJobChan:  cancelJobCh,
 		ResultsChannel: resultsCh,
+		MetricsChannel: metricsCh,
 		WorkerManager:  wm,
 		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
 		Clock:          clockwork.NewRealClock(),
 	})
 
 	go dispatcher.Run(appResources.Ctx)
-	go mq.PublishJobResults(appResources.Ctx, resultsCh)
+	// Start separate publishers for results and metrics
+	go func() {
+		if err := mq.PublishStreamingEvents(appResources.Ctx, mq.EventTypeResults, resultsCh); err != nil {
+			log.Fatalf("MQ results publisher error: %v", err)
+		}
+	}()
+	go func() {
+		if err := mq.PublishStreamingEvents(appResources.Ctx, mq.EventTypeMetrics, metricsCh); err != nil {
+			log.Fatalf("MQ metrics publisher error: %v", err)
+		}
+	}()
 
 	<-appResources.Ctx.Done()
 	if err := wm.Shutdown(); err != nil {
