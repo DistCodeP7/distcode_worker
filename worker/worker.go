@@ -172,7 +172,6 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 
 	select {
 	case <-ctx.Done():
-		log.Printf("Job cancelled, stopping current execution in container %s", w.containerID)
 		return ctx.Err()
 	case err := <-done:
 		if err != nil {

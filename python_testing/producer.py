@@ -48,7 +48,7 @@ networked_example =  [
             fmt.Println("Worker 1 received:", resp.Status)
         }
         '''
-    ],
+    ]
 
 
 varying_execution_time_examples =  [   # CPU-bound recursive Fibonacci (slow)
@@ -153,8 +153,8 @@ func main() {
 ]
 
 go_snippets = [
-   #networked_example,
-   dsnet,
+   networked_example,
+   #dsnet,
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println("Hello, world!") }', 'package main\nimport "fmt"\nfunc main() { fmt.Println("World, world!") }'],
    #[ 'package main\nimport ("fmt"; "time")\nfunc main() { for i := 1; i <= 5; i++ { fmt.Println("Count:", i); time.Sleep(1 * time.Second) } }', 'package main\nimport "fmt"\nfunc main() { for i := 1; i <= 3; i++ { fmt.Println("Number:", i) } }'],
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println(2 + 2) }'],
@@ -180,8 +180,10 @@ channel = connection.channel()
 channel.queue_declare(queue=QUEUE_NAME, durable=True)
 
 # Publish jobs
+job_uid = "123e4567-e89b-12d3-a456-426614174000"
 for i, code in enumerate(go_snippets, start=1):
     job = {
+        "JobUID": job_uid,
         "ProblemId": i,
         "Code": code,
         "UserId": 1,
