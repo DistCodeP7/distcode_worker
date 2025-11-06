@@ -8,7 +8,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func reconnectorRabbitMQ(ctx context.Context, url string, queueName string, setup func(ch *amqp.Channel) error, run func(ch *amqp.Channel) error) error {
+func ReconnectorRabbitMQ(ctx context.Context, url string, queueName string, setup func(ch *amqp.Channel) error, run func(ch *amqp.Channel) error) error {
 	for {
 		select {
 		case <-ctx.Done():
