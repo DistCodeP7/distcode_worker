@@ -12,7 +12,7 @@ import (
 
 func StartJobConsumer(ctx context.Context, jobs chan<- types.JobRequest) error {
 	queueName := "jobs"
-	return reconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
+	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
 		func(ch *amqp.Channel) error {
 			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
 			return err
@@ -39,7 +39,7 @@ func StartJobConsumer(ctx context.Context, jobs chan<- types.JobRequest) error {
 
 func StartJobCanceller(ctx context.Context, jobs chan<- types.CancelJobRequest) error {
 	queueName := "jobs_cancel"
-	return reconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
+	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
 		func(ch *amqp.Channel) error {
 			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
 			return err

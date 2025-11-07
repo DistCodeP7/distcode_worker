@@ -13,7 +13,7 @@ import (
 )
 
 func TestSendJobErrorResult(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
 	dispatcher := &JobDispatcher{
 		resultsChannel: resultsChan,
 	}
@@ -26,7 +26,7 @@ func TestSendJobErrorResult(t *testing.T) {
 
 	result := <-resultsChan
 	assert.Equal(t, "error", result.Events[0].Kind)
-	assert.Equal(t, "Test error", result.Events[0].Message)
+	assert.Equal(t, "Test error", *result.Events[0].Message)
 	assert.Equal(t, 1, result.ProblemId)
 	assert.Equal(t, 42, result.UserId)
 	assert.Equal(t, -1, result.SequenceIndex)
@@ -173,7 +173,7 @@ func (m *MockNetworkManager) CreateAndConnect(ctx context.Context, workers []Wor
 // behavior of the job processing flow, ensuring deterministic results.
 func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 	fc := clockwork.NewFakeClock()
-	resultsChan := make(chan types.StreamingJobResult, 2)
+	resultsChan := make(chan types.StreamingJobEvent, 2)
 	flushInterval := 100 * time.Millisecond
 
 	messageSent := make(chan struct{})
@@ -231,7 +231,7 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "timed out waiting for worker to send message")
 
 	fc.Advance(flushInterval)
-	var firstResult types.StreamingJobResult
+	var firstResult types.StreamingJobEvent
 	select {
 	case firstResult = <-resultsChan:
 	case <-time.After(time.Second):
@@ -241,7 +241,7 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 	assert.Equal(t, 1, firstResult.ProblemId)
 	assert.Equal(t, 0, firstResult.SequenceIndex)
 	assert.Len(t, firstResult.Events, 1)
-	assert.Equal(t, "periodic flush message", firstResult.Events[0].Message)
+	assert.Equal(t, "periodic flush message", *firstResult.Events[0].Message)
 	assert.Equal(t, "stdout", firstResult.Events[0].Kind)
 
 	cancel()
@@ -252,7 +252,7 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 		t.Fatal("timed out waiting for processJob to finish")
 	}
 
-	var finalResult types.StreamingJobResult
+	var finalResult types.StreamingJobEvent
 	select {
 	case finalResult = <-resultsChan:
 	case <-time.After(time.Second):

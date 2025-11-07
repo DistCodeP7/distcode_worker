@@ -6,22 +6,25 @@ import (
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 )
 
-func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.StreamingJobResult) *EventAggregator {
+func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.StreamingJobEvent, metricsChannel chan<- types.StreamingJobEvent) *EventAggregator {
 	return &EventAggregator{
 		resultsChannel: resultsChannel,
+		metricsChannel: metricsChannel,
 		clock:          clock,
 		eventBuf:       make([]types.StreamingEvent, 0),
 	}
 }
 
 func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -29,7 +32,7 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 
 	aggregator.eventBuf = append(aggregator.eventBuf, types.StreamingEvent{
 		Kind:    "stdout",
-		Message: "Hello, World!",
+		Message: utils.PtrString("Hello, World!"),
 	})
 
 	aggregator.flushRemainingEvents(job)
@@ -42,8 +45,8 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 		if len(result.Events) != 1 {
 			t.Errorf("Expected 1 event, got %d", len(result.Events))
 		}
-		if result.Events[0].Message != "Hello, World!" {
-			t.Errorf("Unexpected event message: %q", result.Events[0].Message)
+		if result.Events[0].Message == nil || *result.Events[0].Message != "Hello, World!" {
+			t.Errorf("Unexpected event message: %v", result.Events[0].Message)
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("Timeout waiting for result")
@@ -51,9 +54,10 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 }
 
 func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -75,9 +79,10 @@ func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
 }
 
 func TestPeriodicFlushWithMessage(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -91,7 +96,7 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 	aggregator.muEvents.Lock()
 	aggregator.eventBuf = append(aggregator.eventBuf, types.StreamingEvent{
 		Kind:    "stdout",
-		Message: "Periodic Event",
+		Message: utils.PtrString("Periodic Event"),
 	})
 	aggregator.muEvents.Unlock()
 
@@ -105,8 +110,8 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 		if len(result.Events) != 1 {
 			t.Errorf("Expected 1 event, got %d", len(result.Events))
 		}
-		if result.Events[0].Message != "Periodic Event" {
-			t.Errorf("Unexpected event message: %q", result.Events[0].Message)
+		if result.Events[0].Message == nil || *result.Events[0].Message != "Periodic Event" {
+			t.Errorf("Unexpected event message: %v", result.Events[0].Message)
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("Timeout waiting for result")
@@ -114,9 +119,10 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 }
 
 func TestPeriodicFlushWithNoMessage(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 1)
+	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -169,9 +175,10 @@ func (w *fakeWorker) Stop(ctx context.Context) error {
 }
 
 func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
-	resultsChan := make(chan types.StreamingJobResult, 2)
+	resultsChan := make(chan types.StreamingJobEvent, 2)
+	metricsChan := make(chan types.StreamingJobEvent, 2)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 
 	job := types.JobRequest{
 		ProblemId: 123,
@@ -191,7 +198,7 @@ func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 	}
 
 	code := "print('Hello, World!')"
-	aggregator.startWorkerLogStreaming(ctx, worker, code, nil)
+	aggregator.startWorkerLogStreaming(ctx, worker, code, nil, job)
 
 	assert.Eventually(t, func() bool {
 		aggregator.muEvents.Lock()
@@ -207,7 +214,9 @@ func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 
 		messageMap := make(map[string]bool)
 		for _, event := range result.Events {
-			messageMap[event.Message] = true
+			if event.Message != nil {
+				messageMap[*event.Message] = true
+			}
 		}
 		assert.Contains(t, messageMap, "out1")
 		assert.Contains(t, messageMap, "out2")

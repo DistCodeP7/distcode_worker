@@ -9,23 +9,26 @@ import (
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/jonboulle/clockwork"
 )
 
 type JobDispatcherConfig struct {
-	CancelJobChan  <-chan types.CancelJobRequest   // receive-only
-	JobChannel     <-chan types.JobRequest         // receive-only
-	ResultsChannel chan<- types.StreamingJobResult // send-only
-	WorkerManager  WorkerManagerInterface          // assumes non-nil
-	NetworkManager NetworkManagerInterface         // assumes non-nil
-	Clock          clockwork.Clock                 // Optional, for testing purposes
-	FlushInterval  time.Duration                   // Optional, for testing purposes
+	CancelJobChan  <-chan types.CancelJobRequest  // receive-only
+	JobChannel     <-chan types.JobRequest        // receive-only
+	ResultsChannel chan<- types.StreamingJobEvent // send-only
+	MetricsChannel chan<- types.StreamingJobEvent // send-only
+	WorkerManager  WorkerManagerInterface         // assumes non-nil
+	NetworkManager NetworkManagerInterface        // assumes non-nil
+	Clock          clockwork.Clock                // Optional, for testing purposes
+	FlushInterval  time.Duration                  // Optional, for testing purposes
 }
 
 type JobDispatcher struct {
 	cancelJobChan  <-chan types.CancelJobRequest
 	jobChannel     <-chan types.JobRequest
-	resultsChannel chan<- types.StreamingJobResult
+	resultsChannel chan<- types.StreamingJobEvent
+	metricsChannel chan<- types.StreamingJobEvent
 	workerManager  WorkerManagerInterface
 	networkManager NetworkManagerInterface
 	Clock          clockwork.Clock
@@ -55,6 +58,7 @@ func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
 		cancelJobChan:  config.CancelJobChan,
 		jobChannel:     config.JobChannel,
 		resultsChannel: config.ResultsChannel,
+		metricsChannel: config.MetricsChannel,
 		workerManager:  config.WorkerManager,
 		networkManager: config.NetworkManager,
 		Clock:          config.Clock,
@@ -93,14 +97,15 @@ func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 
 // Utility function to send an error result for a job.
 func (d *JobDispatcher) sendJobError(job types.JobRequest, err error) {
-	d.resultsChannel <- types.StreamingJobResult{
+	d.resultsChannel <- types.StreamingJobEvent{
 		JobUID:        job.JobUID,
 		ProblemId:     job.ProblemId,
 		UserId:        job.UserId,
 		SequenceIndex: -1, // signals end of stream
 		Events: []types.StreamingEvent{{
-			Kind:    "error",
-			Message: err.Error(),
+			Kind:     "error",
+			WorkerId: nil,
+			Message:  utils.PtrString(err.Error()),
 		}},
 	}
 }
@@ -109,6 +114,7 @@ func (d *JobDispatcher) sendJobError(job types.JobRequest, err error) {
 // sets up a Docker network, streams logs from each worker, and sends aggregated events to the results channel.
 func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	log.Printf("Starting job %v", job.ProblemId)
+	submissionT := time.Now()
 
 	requiredWorkers := len(job.Code)
 	workers, err := d.requestWorkerReservation(ctx, job.ProblemId, requiredWorkers)
@@ -116,6 +122,8 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		d.sendJobError(job, err)
 		return
 	}
+
+	setupStartT := time.Now()
 
 	// Per-job context with timeout
 	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutLimit)*time.Second)
@@ -142,13 +150,14 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		wg:             sync.WaitGroup{},
 		muEvents:       sync.Mutex{},
 		resultsChannel: d.resultsChannel,
+		metricsChannel: d.metricsChannel,
 		eventBuf:       make([]types.StreamingEvent, 0),
 		clock:          d.Clock,
 	}
 
 	cleanupTimedFlush, flushDone := ea.startPeriodicFlush(jobCtx, job, d.FlushInterval)
 	for i, worker := range workers {
-		ea.startWorkerLogStreaming(jobCtx, worker, job.Code[i], cancel)
+		ea.startWorkerLogStreaming(jobCtx, worker, job.Code[i], cancel, job)
 	}
 
 	ea.wg.Wait()
@@ -159,6 +168,33 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 			d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
 		} else {
 			d.sendJobError(job, jobCtx.Err())
+		}
+	}
+
+	endT := time.Now()
+
+	jobMetric := &types.JobMetricPayload{
+		SchedulingDelay: setupStartT.Sub(submissionT),
+		ExecutionTime:   endT.Sub(setupStartT),
+		TotalTime:       endT.Sub(submissionT),
+	}
+
+	jobMetricEvent := types.StreamingJobEvent{
+		JobUID:    job.JobUID,
+		ProblemId: job.ProblemId,
+		UserId:    job.UserId,
+		Events:    []types.StreamingEvent{{
+			Kind:      "metric",
+			JobMetric: jobMetric,
+		}},
+	}
+
+	// Send job-level metric (non-blocking)
+	if d.metricsChannel != nil {
+		select {
+		case d.metricsChannel <- jobMetricEvent:
+		default:
+			log.Printf("Dropped job metric for job %v (channel full)", job.ProblemId)
 		}
 	}
 
@@ -193,13 +229,15 @@ func (d *JobDispatcher) requestWorkerReservation(ctx context.Context, jobID, cou
 type EventAggregator struct {
 	wg             sync.WaitGroup
 	muEvents       sync.Mutex
-	resultsChannel chan<- types.StreamingJobResult
+	resultsChannel chan<- types.StreamingJobEvent
+	metricsChannel chan<- types.StreamingJobEvent // Used for direct metric sends
 	eventBuf       []types.StreamingEvent
 	clock          clockwork.Clock
 }
 
 // startWorkerLogStreaming streams logs from a worker and appends them to the event buffer.
-func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker WorkerInterface, code string, cancelJob context.CancelFunc) {
+// It also records execution duration and sends a metric event to the metrics channel if configured.
+func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker WorkerInterface, code string, cancelJob context.CancelFunc, job types.JobRequest) {
 	stdoutCh := make(chan string, 10)
 	stderrCh := make(chan string, 10)
 
@@ -207,7 +245,11 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker Wo
 	go func(id string) {
 		for line := range stdoutCh {
 			e.muEvents.Lock()
-			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "stdout", Message: line, WorkerId: id})
+			e.eventBuf = append(e.eventBuf, types.StreamingEvent{
+				Kind:     "stdout",
+				WorkerId: utils.PtrString(id),
+				Message:  utils.PtrString(line),
+			})
 			e.muEvents.Unlock()
 		}
 	}(worker.ID())
@@ -216,24 +258,59 @@ func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker Wo
 	go func(id string) {
 		for line := range stderrCh {
 			e.muEvents.Lock()
-			e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "stderr", Message: line, WorkerId: id})
+			e.eventBuf = append(e.eventBuf, types.StreamingEvent{
+				Kind:     "stderr",
+				WorkerId: utils.PtrString(id),
+				Message:  utils.PtrString(line),
+			})
 			e.muEvents.Unlock()
 		}
 	}(worker.ID())
 
 	e.wg.Add(1)
-	// Run the code in the worker
+	// Run the code in the worker and record metrics
 	go func(w WorkerInterface, code string, id string) {
 		defer e.wg.Done()
+		startT := time.Now()
 		if err := w.ExecuteCode(ctx, code, stdoutCh, stderrCh); err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {
 				log.Printf("Worker %s execution cancelled", id)
 			} else {
 				log.Printf("Worker %s execution error: %v", id, err)
 				e.muEvents.Lock()
-				e.eventBuf = append(e.eventBuf, types.StreamingEvent{Kind: "error", Message: err.Error(), WorkerId: id})
+				e.eventBuf = append(e.eventBuf, types.StreamingEvent{
+					Kind:     "error",
+					WorkerId: utils.PtrString(id),
+					Message:  utils.PtrString(err.Error()),
+				})
 				e.muEvents.Unlock()
 				cancelJob()
+			}
+		}
+		endT := time.Now()
+
+		// Send metric directly through metrics channel if configured
+		if e.metricsChannel != nil {
+			metricEvent := types.StreamingJobEvent{
+				JobUID:    job.JobUID,
+				ProblemId: job.ProblemId,
+				UserId:    job.UserId,
+				Events: []types.StreamingEvent{{
+					Kind:     "metric",
+					WorkerId: utils.PtrString(id),
+					WorkerMetric: &types.WorkerMetricPayload{
+						StartTime: startT,
+						EndTime:   endT,
+						DeltaTime: endT.Sub(startT),
+					},
+				}},
+			}
+			// Non-blocking send - if channel is full, we drop the metric rather than
+			// risk impacting worker execution or results delivery
+			select {
+			case e.metricsChannel <- metricEvent:
+			default:
+				log.Printf("Dropped metric for worker %s (channel full)", id)
 			}
 		}
 
@@ -260,7 +337,7 @@ func (e *EventAggregator) startPeriodicFlush(ctx context.Context, job types.JobR
 				if len(e.eventBuf) > 0 {
 					eventsCopy := append([]types.StreamingEvent(nil), e.eventBuf...)
 					e.eventBuf = nil
-					e.resultsChannel <- types.StreamingJobResult{
+					e.resultsChannel <- types.StreamingJobEvent{
 						JobUID:        job.JobUID,
 						ProblemId:     job.ProblemId,
 						UserId:        job.UserId,
@@ -284,22 +361,57 @@ func (e *EventAggregator) startPeriodicFlush(ctx context.Context, job types.JobR
 	return cleanupFunc, doneCh
 }
 
-// flushRemainingEvents sends any remaining events to the jobs channel.
-// It also also sends the special SequenceIndex of -1 to indicate the end of the job's events.
+// flushRemainingEvents sends any remaining events to both the results and metrics channels.
+// It also sends the special SequenceIndex of -1 to indicate the end of the job's events.
 func (e *EventAggregator) flushRemainingEvents(job types.JobRequest) {
 	e.muEvents.Lock()
+	defer e.muEvents.Unlock()
 	events := e.eventBuf
 
 	// Ensure events is not nil
 	if events == nil {
-		events = make([]types.StreamingEvent, 0)
+		events = []types.StreamingEvent{}
 	}
-	e.resultsChannel <- types.StreamingJobResult{
+
+	var resultEvents, metricEvents []types.StreamingEvent
+	var totalWorkerTime time.Duration
+
+	for _, evt := range events {
+		switch evt.Kind {
+		case "result", "stdout", "stderr", "error":
+			resultEvents = append(resultEvents, evt)
+		case "metric":
+			metricEvents = append(metricEvents, evt)
+			if evt.WorkerMetric != nil {
+				totalWorkerTime += evt.WorkerMetric.DeltaTime
+			}
+		}
+	}
+
+	// Send final non-metric events
+	e.resultsChannel <- types.StreamingJobEvent{
 		JobUID:        job.JobUID,
 		ProblemId:     job.ProblemId,
 		UserId:        job.UserId,
 		SequenceIndex: -1,
-		Events:        events,
+		Events:        resultEvents,
 	}
-	e.muEvents.Unlock()
+
+	// Send final metric events
+	if e.metricsChannel != nil {
+		jobMetric := &types.JobMetricPayload{
+			ExecutionTime: totalWorkerTime,
+		}
+
+		e.metricsChannel <- types.StreamingJobEvent{
+			JobUID:        job.JobUID,
+			ProblemId:     job.ProblemId,
+			UserId:        job.UserId,
+			SequenceIndex: -1,
+			Events:        append(metricEvents, types.StreamingEvent{
+				Kind: 		"metric",
+				JobMetric: 	jobMetric,
+			}),
+		}
+	}
 }
