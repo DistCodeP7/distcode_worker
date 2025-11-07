@@ -8,3 +8,7 @@ func PtrInt64(i int) *int64 {
 	v := int64(i)
 	return &v
 }
+
+func PtrString(s string) *string {
+	return &s
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 )
@@ -29,7 +30,7 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 
 	aggregator.eventBuf = append(aggregator.eventBuf, types.StreamingEvent{
 		Kind:    "stdout",
-		Message: "Hello, World!",
+		Message: utils.PtrString("Hello, World!"),
 	})
 
 	aggregator.flushRemainingEvents(job)
@@ -42,8 +43,8 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 		if len(result.Events) != 1 {
 			t.Errorf("Expected 1 event, got %d", len(result.Events))
 		}
-		if result.Events[0].Message != "Hello, World!" {
-			t.Errorf("Unexpected event message: %q", result.Events[0].Message)
+		if result.Events[0].Message == nil || *result.Events[0].Message != "Hello, World!" {
+			t.Errorf("Unexpected event message: %v", result.Events[0].Message)
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("Timeout waiting for result")
@@ -91,7 +92,7 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 	aggregator.muEvents.Lock()
 	aggregator.eventBuf = append(aggregator.eventBuf, types.StreamingEvent{
 		Kind:    "stdout",
-		Message: "Periodic Event",
+		Message: utils.PtrString("Periodic Event"),
 	})
 	aggregator.muEvents.Unlock()
 
@@ -105,8 +106,8 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 		if len(result.Events) != 1 {
 			t.Errorf("Expected 1 event, got %d", len(result.Events))
 		}
-		if result.Events[0].Message != "Periodic Event" {
-			t.Errorf("Unexpected event message: %q", result.Events[0].Message)
+		if result.Events[0].Message == nil || *result.Events[0].Message != "Periodic Event" {
+			t.Errorf("Unexpected event message: %v", result.Events[0].Message)
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("Timeout waiting for result")
@@ -207,7 +208,9 @@ func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 
 		messageMap := make(map[string]bool)
 		for _, event := range result.Events {
-			messageMap[event.Message] = true
+			if event.Message != nil {
+				messageMap[*event.Message] = true
+			}
 		}
 		assert.Contains(t, messageMap, "out1")
 		assert.Contains(t, messageMap, "out2")
