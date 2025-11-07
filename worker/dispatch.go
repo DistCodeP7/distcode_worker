@@ -183,9 +183,9 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		JobUID:    job.JobUID,
 		ProblemId: job.ProblemId,
 		UserId:    job.UserId,
-		Events: []types.StreamingEvent{{
-			Kind:         "metric",
-			JobMetric:    jobMetric,
+		Events:    []types.StreamingEvent{{
+			Kind:      "metric",
+			JobMetric: jobMetric,
 		}},
 	}
 
