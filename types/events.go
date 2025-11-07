@@ -25,9 +25,9 @@ type WorkerMetricPayload struct {
 }
 
 type JobMetricPayload struct {
-	SchedulingDelay time.Duration `json:"scheduling_delay,omitempty"`
-	ExecutionTime   time.Duration `json:"execution_time,omitempty"`
-	TotalTime       time.Duration `json:"total_time,omitempty"`
+	SchedulingDelay time.Duration `json:"scheduling_delay,omitempty"` // time spent waiting for a worker to be reserved
+	ExecutionTime   time.Duration `json:"execution_time,omitempty"`   // time spent executing the job
+	TotalTime       time.Duration `json:"total_time,omitempty"`       // total time from submission to completion
 }
 
 type StreamingEvent struct {

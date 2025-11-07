@@ -11,9 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.StreamingJobEvent) *EventAggregator {
+func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.StreamingJobEvent, metricsChannel chan<- types.StreamingJobEvent) *EventAggregator {
 	return &EventAggregator{
 		resultsChannel: resultsChannel,
+		metricsChannel: metricsChannel,
 		clock:          clock,
 		eventBuf:       make([]types.StreamingEvent, 0),
 	}
@@ -21,8 +22,9 @@ func newTestAggregator(clock clockwork.Clock, resultsChannel chan<- types.Stream
 
 func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -53,8 +55,9 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 
 func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
 	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -77,8 +80,9 @@ func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
 
 func TestPeriodicFlushWithMessage(t *testing.T) {
 	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -116,8 +120,9 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 
 func TestPeriodicFlushWithNoMessage(t *testing.T) {
 	resultsChan := make(chan types.StreamingJobEvent, 1)
+	metricsChan := make(chan types.StreamingJobEvent, 1)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
 		UserId:    42,
@@ -171,8 +176,9 @@ func (w *fakeWorker) Stop(ctx context.Context) error {
 
 func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 	resultsChan := make(chan types.StreamingJobEvent, 2)
+	metricsChan := make(chan types.StreamingJobEvent, 2)
 	clock := clockwork.NewFakeClock()
-	aggregator := newTestAggregator(clock, resultsChan)
+	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 
 	job := types.JobRequest{
 		ProblemId: 123,

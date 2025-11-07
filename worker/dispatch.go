@@ -378,7 +378,7 @@ func (e *EventAggregator) flushRemainingEvents(job types.JobRequest) {
 
 	for _, evt := range events {
 		switch evt.Kind {
-		case "result":
+		case "result", "stdout", "stderr", "error":
 			resultEvents = append(resultEvents, evt)
 		case "metric":
 			metricEvents = append(metricEvents, evt)
