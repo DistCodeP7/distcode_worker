@@ -1,6 +1,6 @@
 # Go-Backend
 
-## Quick Start
+## Getting Started
 
 1. Start RabbitMQ server from the docker-compose repo:
 
