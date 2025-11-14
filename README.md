@@ -1,13 +1,13 @@
 # Go-Backend
 
-## Quick Start
+## Getting Started
 
-1. Start RabbitMQ server:
+1. Start RabbitMQ server from the docker-compose repo:
 
 ```bash
-docker run -d --name rabbitmq \
-  -p 5672:5672 -p 15672:15672 \
-  rabbitmq:management
+git clone https://github.com/DistCodeP7/docker-compose.git docker-compose
+cd docker-compose
+docker-compose up -d
 ```
 
 2. Run go application:
@@ -38,16 +38,6 @@ go run main.go
 
 ```bash
 go test ./...
-```
-
-## Setup docker environment with RabbitMQ
-
-To set up a RabbitMQ server using Docker, you can use the following command to pull and run the RabbitMQ image with the management plugin:
-
-```bash
-docker run -d --name rabbitmq \
-  -p 5672:5672 -p 15672:15672 \
-  rabbitmq:management
 ```
 
 ## Python Message Queue script
