@@ -10,13 +10,13 @@ cd docker-compose
 docker-compose up -d
 ```
 
-1. Run go application:
+2. Run go application:
 
 ```bash
 go run main.go
 ```
 
-2. Test the message queue using Python:
+3. Test the message queue using Python:
 
 ```bash
 cd python_testing
