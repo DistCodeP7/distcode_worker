@@ -14,7 +14,7 @@ type JobRequest struct {
 	JobUID       uuid.UUID
 	ProblemId    int
 	Code         []string
-	UserId       int
+	UserId       string
 	TimeoutLimit int // in seconds
 }
 
@@ -42,6 +42,6 @@ type StreamingJobEvent struct {
 	JobUID        uuid.UUID `json:"job_uid"`
 	ProblemId     int
 	Events        []StreamingEvent
-	UserId        int
+	UserId        string
 	SequenceIndex int
 }
