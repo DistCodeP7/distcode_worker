@@ -33,7 +33,7 @@ type JobMetricPayload struct {
 type StreamingEvent struct {
 	Kind        	string // "stdout" | "stderr" | "error" | "cancel" | "metric"
 	WorkerId    	*string `json:"worker_id"`
-	Message     	*string `json:"message,omitempty"`
+	Message     	*string `json:"Message,omitempty"`
 	WorkerMetric 	*WorkerMetricPayload `json:"worker_metric,omitempty"`
 	JobMetric   	*JobMetricPayload  `json:"job_metric,omitempty"`
 }
