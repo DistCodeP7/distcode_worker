@@ -11,34 +11,33 @@ import (
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
 	"github.com/jonboulle/clockwork"
 )
 
 type JobDispatcherConfig struct {
-	CancelJobChan  <-chan types.CancelJobRequest  // receive-only
-	JobChannel     <-chan types.JobRequest        // receive-only
-	ResultsChannel chan<- types.StreamingJobEvent // send-only
-	MetricsChannel chan<- types.StreamingJobEvent // send-only
-	WorkerManager  WorkerManagerInterface         // assumes non-nil
-	NetworkManager NetworkManagerInterface        // assumes non-nil
-	ControllerImageName string                      // assumes non-nil
-	Clock          clockwork.Clock                // Optional, for testing purposes
-	FlushInterval  time.Duration                  // Optional, for testing purposes
+	CancelJobChan       <-chan types.CancelJobRequest  // receive-only
+	JobChannel          <-chan types.JobRequest        // receive-only
+	ResultsChannel      chan<- types.StreamingJobEvent // send-only
+	MetricsChannel      chan<- types.StreamingJobEvent // send-only
+	WorkerManager       WorkerManagerInterface         // assumes non-nil
+	NetworkManager      NetworkManagerInterface        // assumes non-nil
+	ControllerImageName string                         // assumes non-nil
+	Clock               clockwork.Clock                // Optional, for testing purposes
+	FlushInterval       time.Duration                  // Optional, for testing purposes
 }
 
 type JobDispatcher struct {
-	cancelJobChan  <-chan types.CancelJobRequest
-	jobChannel     <-chan types.JobRequest
-	resultsChannel chan<- types.StreamingJobEvent
-	metricsChannel chan<- types.StreamingJobEvent
-	workerManager  WorkerManagerInterface
-	networkManager NetworkManagerInterface
+	cancelJobChan       <-chan types.CancelJobRequest
+	jobChannel          <-chan types.JobRequest
+	resultsChannel      chan<- types.StreamingJobEvent
+	metricsChannel      chan<- types.StreamingJobEvent
+	workerManager       WorkerManagerInterface
+	networkManager      NetworkManagerInterface
 	ControllerImageName string
-	Clock          clockwork.Clock
-	FlushInterval  time.Duration
-	mu             sync.Mutex
-	activeJobs     map[string]context.CancelFunc
+	Clock               clockwork.Clock
+	FlushInterval       time.Duration
+	mu                  sync.Mutex
+	activeJobs          map[string]context.CancelFunc
 }
 
 type WorkerManagerInterface interface {
@@ -59,15 +58,16 @@ func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
 		config.FlushInterval = 200 * time.Millisecond
 	}
 	return &JobDispatcher{
-		cancelJobChan:  config.CancelJobChan,
-		jobChannel:     config.JobChannel,
-		resultsChannel: config.ResultsChannel,
-		metricsChannel: config.MetricsChannel,
-		workerManager:  config.WorkerManager,
-		networkManager: config.NetworkManager,
-		Clock:          config.Clock,
-		FlushInterval:  config.FlushInterval,
-		activeJobs:     make(map[string]context.CancelFunc),
+		cancelJobChan:       config.CancelJobChan,
+		jobChannel:          config.JobChannel,
+		resultsChannel:      config.ResultsChannel,
+		metricsChannel:      config.MetricsChannel,
+		workerManager:       config.WorkerManager,
+		networkManager:      config.NetworkManager,
+		ControllerImageName: config.ControllerImageName,
+		Clock:               config.Clock,
+		FlushInterval:       config.FlushInterval,
+		activeJobs:          make(map[string]context.CancelFunc),
 	}
 }
 
@@ -149,7 +149,6 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		d.sendJobError(job, err)
 		return
 	}
-	defer cleanupNetwork()
 
 	// Start DSNet controller in the created network
 	controllerID, err := d.startDSNetController(jobCtx, networkName, job)
@@ -157,12 +156,17 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		log.Printf("Failed to start DSNet controller for job %d: %v", job.ProblemId, err)
 		_ = d.workerManager.ReleaseJob(job.ProblemId)
 		d.sendJobError(job, err)
+		cleanupNetwork()
 		return
 	}
-	defer d.cleanupController(jobCtx, controllerID)
+
+	// Defer in reverse order: network cleanup first (defers are LIFO)
+	// This way controller cleanup runs before network cleanup
+	defer cleanupNetwork()
+	defer d.cleanupController(context.Background(), controllerID)
 
 	// Allow some time for network and controller setup
-	time.Sleep(500 * time.Millisecond) 
+	time.Sleep(500 * time.Millisecond)
 
 	setupEndT := time.Now()
 	log.Printf("Setup for job %v took %v", job.ProblemId, setupEndT.Sub(setupStartT))
@@ -211,7 +215,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		JobUID:    job.JobUID,
 		ProblemId: job.ProblemId,
 		UserId:    job.UserId,
-		Events:    []types.StreamingEvent{{
+		Events: []types.StreamingEvent{{
 			Kind:      "metric",
 			JobMetric: jobMetric,
 		}},
@@ -236,34 +240,33 @@ func (d *JobDispatcher) startDSNetController(ctx context.Context, networkName st
 	}
 	cli := dockerNetworkMgr.GetDockerClient()
 
-	resp, err := cli.ContainerCreate(ctx, 
+	// Create and start controller container with network specified
+	resp, err := cli.ContainerCreate(ctx,
 		&container.Config{
-			Image: 		d.ControllerImageName,
-			Hostname : 	"dsnet-controller",
+			Image:    d.ControllerImageName,
+			Hostname: "dsnet-controller",
+			Cmd:      []string{"/app/controller"},
 		},
 		&container.HostConfig{
 			NetworkMode: container.NetworkMode(networkName),
-		}, 
-		&network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				networkName: {
-					Aliases: []string{"dsnet-controller"},
-				},
-			},
-		}, 
-		nil, 
+		},
+		nil,
+		nil,
 		containerName,
 	)
-	
+
 	if err != nil {
 		return "", fmt.Errorf("failed to create DSNet controller container: %w", err)
 	}
 
+	log.Printf("Controller container created: %s, starting...", resp.ID[:12])
+
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return "", fmt.Errorf("failed to start DSNet controller container: %w", err)
 	}
 
-	log.Printf("Started DSNet controller %s in networkk %s", resp.ID[:12], networkName)
+	log.Printf("Started DSNet controller %s in network %s", resp.ID[:12], networkName)
 	return resp.ID, nil
 }
 
@@ -275,13 +278,13 @@ func (d *JobDispatcher) cleanupController(ctx context.Context, controllerID stri
 	}
 	cli := dockerNetworkMgr.dockerCli
 
-	timeout := 5
-	if err := cli.ContainerStop(ctx, controllerID, container.StopOptions{Timeout: &timeout}); err != nil {
-		log.Printf("Failed to stop DSNet controller %s: %v", controllerID, err)
-	}
 	if err := cli.ContainerRemove(ctx, controllerID, container.RemoveOptions{Force: true}); err != nil {
 		log.Printf("Failed to remove DSNet controller %s: %v", controllerID, err)
+	} else {
+		log.Printf("Cleaned up DSNet controller %s", controllerID[:12])
 	}
+	// Give Docker a moment to fully disconnect the container from the network
+	time.Sleep(100 * time.Millisecond)
 }
 
 // requestWorkerReservation tries to reserve the required number of workers for the job.
@@ -464,17 +467,19 @@ func (e *EventAggregator) flushRemainingEvents(job types.JobRequest) {
 		}
 	}
 
-	// Send final non-metric events
-	e.resultsChannel <- types.StreamingJobEvent{
-		JobUID:        job.JobUID,
-		ProblemId:     job.ProblemId,
-		UserId:        job.UserId,
-		SequenceIndex: -1,
-		Events:        resultEvents,
+	// Send final non-metric events with SequenceIndex -1 to signal end
+	if len(resultEvents) > 0 {
+		e.resultsChannel <- types.StreamingJobEvent{
+			JobUID:        job.JobUID,
+			ProblemId:     job.ProblemId,
+			UserId:        job.UserId,
+			SequenceIndex: -1,
+			Events:        resultEvents,
+		}
 	}
 
 	// Send final metric events
-	if e.metricsChannel != nil {
+	if e.metricsChannel != nil && len(metricEvents) > 0 {
 		jobMetric := &types.JobMetricPayload{
 			ExecutionTime: totalWorkerTime,
 		}
@@ -484,9 +489,9 @@ func (e *EventAggregator) flushRemainingEvents(job types.JobRequest) {
 			ProblemId:     job.ProblemId,
 			UserId:        job.UserId,
 			SequenceIndex: -1,
-			Events:        append(metricEvents, types.StreamingEvent{
-				Kind: 		"metric",
-				JobMetric: 	jobMetric,
+			Events: append(metricEvents, types.StreamingEvent{
+				Kind:      "metric",
+				JobMetric: jobMetric,
 			}),
 		}
 	}

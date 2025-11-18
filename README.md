@@ -19,6 +19,7 @@ go run main.go
 3. Test the message queue using Python:
 
 ### Linux
+
 ```bash
 cd python_testing
 python3 -m venv venv
@@ -28,6 +29,7 @@ python producer.py
 ```
 
 ### Windows
+
 ```bash
 cd python_testing
 python -m venv venv

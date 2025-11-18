@@ -1,5 +1,6 @@
 import json
 import pika
+import uuid
 
 # Configuration
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
@@ -130,26 +131,33 @@ func main() {
 
 
 dsnet = [
-    """
- package main
+    """package main
 
 import (
-    "log"
-    // Import the package and give it an alias to access its exported functions
-    dsnet "github.com/distcode/dsnet/dsnet" 
+    "fmt"
+    "time"
+
+    dsnet "github.com/distcodep7/dsnet/dsnet"
 )
 
 func main() {
-    log.Println("Attempting to connect...")
-    // Use the package-qualified function name: dsnet.Connect
-    _, err := dsnet.Connect("localhost:50051", "nodeA")
+    fmt.Println("Connecting to network...")
     
+    node, err := dsnet.Connect("worker-0")
     if err != nil {
+        fmt.Printf("Failed to connect: %v", err)
         return
     }
-    log.Println("Successfully connected or connection process finished.")
+    defer node.Close()
+    
+    fmt.Println("Successfully connected!")
+    
+    // Keep running for a bit to verify connection stability
+    time.Sleep(2 * time.Second)
+    
+    fmt.Println("Test completed successfully")
 }
-    """
+"""
 ]
 
 go_snippets = [
@@ -182,6 +190,7 @@ channel.queue_declare(queue=QUEUE_NAME, durable=True)
 # Publish jobs
 for i, code in enumerate(go_snippets, start=1):
     job = {
+        "JobUID": str(uuid.uuid4()),
         "ProblemId": i,
         "Code": code,
         "UserId": 1,
