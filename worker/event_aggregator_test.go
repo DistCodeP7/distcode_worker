@@ -27,7 +27,7 @@ func TestFlushRemainingEventsWithMessageInBuffer(t *testing.T) {
 	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
-		UserId:    42,
+		UserId:    "42",
 	}
 
 	aggregator.eventBuf = append(aggregator.eventBuf, types.StreamingEvent{
@@ -60,7 +60,7 @@ func TestFlushRemainingEventsWithNoMessageInBuffer(t *testing.T) {
 	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
-		UserId:    42,
+		UserId:    "42",
 	}
 
 	aggregator.flushRemainingEvents(job)
@@ -85,7 +85,7 @@ func TestPeriodicFlushWithMessage(t *testing.T) {
 	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
-		UserId:    42,
+		UserId:    "42",
 	}
 
 	ctx := t.Context()
@@ -125,7 +125,7 @@ func TestPeriodicFlushWithNoMessage(t *testing.T) {
 	aggregator := newTestAggregator(clock, resultsChan, metricsChan)
 	job := types.JobRequest{
 		ProblemId: 1,
-		UserId:    42,
+		UserId:    "42",
 	}
 
 	ctx := t.Context()
@@ -182,7 +182,7 @@ func TestWorkerLogStreamingAndPeriodicFlushIntegration(t *testing.T) {
 
 	job := types.JobRequest{
 		ProblemId: 123,
-		UserId:    456,
+		UserId:    "456",
 	}
 
 	ctx := t.Context()

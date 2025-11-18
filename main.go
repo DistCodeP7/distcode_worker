@@ -66,6 +66,8 @@ func main() {
 		MetricsChannel: metricsCh,
 		WorkerManager:  wm,
 		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
+		DockerCli:      appResources.DockerCli,
+		WorkerImage:    workerImageName,
 		Clock:          clockwork.NewRealClock(),
 	})
 

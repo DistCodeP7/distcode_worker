@@ -14,7 +14,7 @@ type JobRequest struct {
 	JobUID       uuid.UUID
 	ProblemId    int
 	Code         []string
-	UserId       int
+	UserId       string
 	TimeoutLimit int // in seconds
 }
 
@@ -31,17 +31,17 @@ type JobMetricPayload struct {
 }
 
 type StreamingEvent struct {
-	Kind        	string // "stdout" | "stderr" | "error" | "cancel" | "metric"
-	WorkerId    	*string `json:"worker_id"`
-	Message     	*string `json:"message,omitempty"`
-	WorkerMetric 	*WorkerMetricPayload `json:"worker_metric,omitempty"`
-	JobMetric   	*JobMetricPayload  `json:"job_metric,omitempty"`
+	Kind         string               // "stdout" | "stderr" | "error" | "cancel" | "metric"
+	WorkerId     *string              `json:"worker_id,omitempty"`
+	Message      *string              `json:"Message,omitempty"`
+	WorkerMetric *WorkerMetricPayload `json:"worker_metric,omitempty"`
+	JobMetric    *JobMetricPayload    `json:"job_metric,omitempty"`
 }
 
 type StreamingJobEvent struct {
 	JobUID        uuid.UUID `json:"job_uid"`
 	ProblemId     int
 	Events        []StreamingEvent
-	UserId        int
+	UserId        string
 	SequenceIndex int
 }
