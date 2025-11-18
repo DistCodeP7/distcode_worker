@@ -48,6 +48,12 @@ func (m *MockWorker) ExecuteCode(ctx context.Context, code string, stdoutCh, std
 	return nil
 }
 
+// ExecuteTest implements the WorkerInterface ExecuteTest used by new code paths in tests.
+func (m *MockWorker) ExecuteTest(ctx context.Context, jobUID string, problemDir string, files []string, stdoutCh, stderrCh chan string) error {
+	stdoutCh <- MockOutput
+	return nil
+}
+
 func (m *MockWorker) WasStopped() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -56,7 +62,7 @@ func (m *MockWorker) WasStopped() bool {
 
 func CreateMockWorkers(count int) []WorkerInterface {
 	workers := make([]WorkerInterface, count)
-	for i := range count {
+	for i := 0; i < count; i++ {
 		workers[i] = &MockWorker{id: fmt.Sprintf("W%d", i+1)}
 	}
 	return workers
@@ -93,19 +99,19 @@ func TestReserveWorkers(t *testing.T) {
 	jobID := 101
 
 	t.Run("Success", func(t *testing.T) {
-		reserved, err := manager.ReserveWorkers(jobID, 3)
+		reserved, err := manager.ReserveWorkers(fmt.Sprintf("%d", jobID), 3)
 
 		assert.NoError(t, err)
 		assert.Len(t, reserved, 3, "Should reserve exactly 3 workers")
 		assert.Len(t, manager.idleWorkers, 2, "Idle list should reduce by 3")
-		assert.Len(t, manager.jobPool[jobID], 3, "Job pool should contain 3 workers for the job")
+		assert.Len(t, manager.jobPool[fmt.Sprintf("%d", jobID)], 3, "Job pool should contain 3 workers for the job")
 		reserved[0] = nil
-		assert.NotNil(t, manager.jobPool[jobID][0], "Internal job pool shouldn't be affected by mutation")
+		assert.NotNil(t, manager.jobPool[fmt.Sprintf("%d", jobID)][0], "Internal job pool shouldn't be affected by mutation")
 	})
 
 	t.Run("ErrorNotEnoughWorkers", func(t *testing.T) {
 
-		_, err := manager.ReserveWorkers(102, 3)
+		_, err := manager.ReserveWorkers(fmt.Sprintf("%d", 102), 3)
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "not enough idle workers currently")
@@ -118,12 +124,12 @@ func TestReleaseJob(t *testing.T) {
 	manager, _ := NewWorkerManager(workers)
 	jobID := 201
 
-	manager.ReserveWorkers(jobID, 3)
+	manager.ReserveWorkers(fmt.Sprintf("%d", jobID), 3)
 
 	initialIdleCount := len(manager.idleWorkers)
 
 	t.Run("Success", func(t *testing.T) {
-		err := manager.ReleaseJob(jobID)
+		err := manager.ReleaseJob(fmt.Sprintf("%d", jobID))
 
 		assert.NoError(t, err)
 		assert.Len(t, manager.jobPool, 0, "Job pool should be empty")
@@ -141,7 +147,7 @@ func TestReleaseJob(t *testing.T) {
 	})
 
 	t.Run("ErrorJobNotFound", func(t *testing.T) {
-		err := manager.ReleaseJob(999)
+		err := manager.ReleaseJob(fmt.Sprintf("%d", 999))
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "jobId 999 not found")
 	})
@@ -187,7 +193,7 @@ func TestShutdown(t *testing.T) {
 		workers := CreateMockWorkers(5)
 		manager, _ := NewWorkerManager(workers)
 
-		manager.ReserveWorkers(301, 2)
+		manager.ReserveWorkers(fmt.Sprintf("%d", 301), 2)
 
 		var wg sync.WaitGroup
 		wg.Add(3)
@@ -199,12 +205,12 @@ func TestShutdown(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			manager.ReleaseJob(301)
+			manager.ReleaseJob(fmt.Sprintf("%d", 301))
 		}()
 		go func() {
 			defer wg.Done()
 
-			manager.ReserveWorkers(302, 1)
+			manager.ReserveWorkers(fmt.Sprintf("%d", 302), 1)
 		}()
 
 		wg.Wait()

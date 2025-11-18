@@ -45,6 +45,16 @@ func TestCentralizedMutex(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(4)
 
+	// First, issue all token requests asynchronously so the server's wait queue
+	// is populated concurrently; each request prints when it is dispatched.
+	for _, id := range []string{"B", "C", "D", "E"} {
+		go func(id string) {
+			net.SendAsync(clients[id].RequestToken("A"))
+			fmt.Printf("[%s] requested token\n", id)
+		}(id)
+	}
+
+	// Now start goroutines that will react to receiving the token and enter CS.
 	for _, id := range nodes {
 		cl := clients[id]
 		go func(id string, c *MutexClient) {
@@ -61,13 +71,6 @@ func TestCentralizedMutex(t *testing.T) {
 			}
 		}(id, cl)
 	}
-
-	go func() {
-		for _, id := range []string{"B", "C", "D", "E"} {
-			net.SendAsync(clients[id].RequestToken("A"))
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
 
 	done := make(chan struct{})
 	go func() {

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -49,14 +50,14 @@ func TestRequestWorkerReservation_WithReleaseAndFakeClock(t *testing.T) {
 
 	ctx := t.Context()
 	jobId, workersNeeded := 1, 1
-	workers, err := dispatcher.workerManager.ReserveWorkers(jobId, workersNeeded)
+	workers, err := dispatcher.workerManager.ReserveWorkers(fmt.Sprintf("%d", jobId), workersNeeded)
 	assert.NoError(t, err)
 	assert.Len(t, workers, 1)
 
 	// Try reserving again — should block until clock fires
 	done := make(chan struct{})
 	go func() {
-		_, err := dispatcher.requestWorkerReservation(ctx, 2, 1)
+		_, err := dispatcher.requestWorkerReservation(ctx, fmt.Sprintf("%d", 2), 1)
 		assert.NoError(t, err)
 		close(done)
 	}()
@@ -65,7 +66,7 @@ func TestRequestWorkerReservation_WithReleaseAndFakeClock(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Release the first job so the worker becomes free
-	err = dispatcher.workerManager.ReleaseJob(1)
+	err = dispatcher.workerManager.ReleaseJob(fmt.Sprintf("%d", 1))
 	assert.NoError(t, err)
 
 	// Trigger the fake clock so retry loop wakes up
@@ -100,7 +101,7 @@ func TestRequestWorkerReservation_ContextCanceled(t *testing.T) {
 
 	errChan := make(chan error, 1)
 	go func() {
-		_, err := dispatcher.requestWorkerReservation(ctx, 1, 1)
+		_, err := dispatcher.requestWorkerReservation(ctx, fmt.Sprintf("%d", 1), 1)
 		errChan <- err
 	}()
 
@@ -136,19 +137,33 @@ func (m *ControllableMockWorker) ExecuteCode(ctx context.Context, code string, s
 	return nil
 }
 
+// ExecuteTest mirrors the new WorkerInterface method used by the dispatcher for tests.
+func (m *ControllableMockWorker) ExecuteTest(ctx context.Context, jobUID string, problemDir string, files []string, stdoutCh, stderrCh chan string) error {
+	// This message is intended to be picked up by the periodic flush.
+	stdoutCh <- "periodic flush message"
+	if m.messageSent != nil {
+		close(m.messageSent) // Signal that the message has been sent
+	}
+
+	// Block until the job context is cancelled.
+	<-ctx.Done()
+	return nil
+}
+
 // MockWorkerManager provides a mock implementation of the WorkerManagerInterface.
+
 type MockWorkerManager struct {
-	ReserveWorkersFunc func(jobId, jobSize int) ([]WorkerInterface, error)
-	ReleaseJobFunc     func(jobId int) error
+	ReserveWorkersFunc func(jobUID string, jobSize int) ([]WorkerInterface, error)
+	ReleaseJobFunc     func(jobUID string) error
 	ShutdownFunc       func() error
 }
 
-func (m *MockWorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error) {
-	return m.ReserveWorkersFunc(jobId, jobSize)
+func (m *MockWorkerManager) ReserveWorkers(jobUID string, jobSize int) ([]WorkerInterface, error) {
+	return m.ReserveWorkersFunc(jobUID, jobSize)
 }
 
-func (m *MockWorkerManager) ReleaseJob(jobId int) error {
-	return m.ReleaseJobFunc(jobId)
+func (m *MockWorkerManager) ReleaseJob(jobUID string) error {
+	return m.ReleaseJobFunc(jobUID)
 }
 
 func (m *MockWorkerManager) Shutdown() error {
@@ -183,10 +198,10 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 	}}
 
 	mockWM := &MockWorkerManager{
-		ReserveWorkersFunc: func(jobId, jobSize int) ([]WorkerInterface, error) {
+		ReserveWorkersFunc: func(jobId string, jobSize int) ([]WorkerInterface, error) {
 			return mockWorkers, nil
 		},
-		ReleaseJobFunc: func(jobId int) error {
+		ReleaseJobFunc: func(jobId string) error {
 			return nil
 		},
 	}

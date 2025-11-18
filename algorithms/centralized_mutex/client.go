@@ -1,6 +1,5 @@
-package template
+package centralized_mutex
 
-/*
 import "sync"
 
 // MutexClient implements MutexClientInterface for the centralised algorithm.
@@ -70,4 +69,3 @@ func (c *MutexClient) OnMessage(msg Message) []Message {
 func (c *MutexClient) WaitChan() <-chan struct{} {
 	return c.csEntryCh
 }
-*/

@@ -9,7 +9,7 @@ import (
 type WorkerManager struct {
 	workers     map[string]WorkerInterface
 	idleWorkers []WorkerInterface
-	jobPool     map[int][]WorkerInterface
+	jobPool     map[string][]WorkerInterface
 	mu          sync.RWMutex
 }
 
@@ -28,13 +28,13 @@ func NewWorkerManager(initialWorkers []WorkerInterface) (*WorkerManager, error) 
 	manager := &WorkerManager{
 		workers:     workersMap,
 		idleWorkers: idleWorkersCopy,
-		jobPool:     make(map[int][]WorkerInterface),
+		jobPool:     make(map[string][]WorkerInterface),
 	}
 
 	return manager, nil
 }
 
-func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error) {
+func (w *WorkerManager) ReserveWorkers(jobUID string, jobSize int) ([]WorkerInterface, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -47,7 +47,7 @@ func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, e
 	reservedCopy := make([]WorkerInterface, len(reserved))
 	copy(reservedCopy, reserved)
 
-	w.jobPool[jobId] = reserved
+	w.jobPool[jobUID] = reserved
 
 	return reservedCopy, nil
 }
@@ -81,16 +81,16 @@ func (w *WorkerManager) Shutdown() error {
 	return firstErr
 }
 
-func (w *WorkerManager) ReleaseJob(jobId int) error {
+func (w *WorkerManager) ReleaseJob(jobUID string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	reservedWorkers, ok := w.jobPool[jobId]
+	reservedWorkers, ok := w.jobPool[jobUID]
 	if !ok {
-		return fmt.Errorf("jobId %d not found", jobId)
+		return fmt.Errorf("jobId %s not found", jobUID)
 	}
 
-	delete(w.jobPool, jobId)
+	delete(w.jobPool, jobUID)
 	w.idleWorkers = append(w.idleWorkers, reservedWorkers...)
 	return nil
 }

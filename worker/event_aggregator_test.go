@@ -162,6 +162,17 @@ func (fw *fakeWorker) ExecuteCode(
 	return fw.err
 }
 
+// ExecuteTest satisfies WorkerInterface for tests that call ExecuteTest on workers.
+func (fw *fakeWorker) ExecuteTest(ctx context.Context, jobUID string, problemDir string, files []string, stdoutCh, stderrCh chan string) error {
+	for _, line := range fw.stdout {
+		stdoutCh <- line
+	}
+	for _, line := range fw.stderr {
+		stderrCh <- line
+	}
+	return fw.err
+}
+
 func (w *fakeWorker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
 	return nil
 }

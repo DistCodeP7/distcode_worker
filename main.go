@@ -45,12 +45,12 @@ func main() {
 	}()
 
 	workers := make([]worker.WorkerInterface, numWorkers)
-	for i := range numWorkers {
-		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
+	for i := 0; i < numWorkers; i++ {
+		w, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
 		if err != nil {
 			log.Fatalf("Failed to create worker: %v", err)
 		}
-		workers[i] = worker
+		workers[i] = w
 	}
 
 	wm, err := worker.NewWorkerManager(workers)
