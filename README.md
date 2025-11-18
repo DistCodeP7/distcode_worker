@@ -4,53 +4,53 @@
 
 1. Start RabbitMQ server from the docker-compose repo:
 
-```bash
-git clone https://github.com/DistCodeP7/docker-compose.git docker-compose
-cd docker-compose
-docker-compose up -d
-```
+   ```bash
+   git clone https://github.com/DistCodeP7/docker-compose.git docker-compose
+   cd docker-compose
+   docker-compose up -d
+   ```
 
 2. Run go application:
 
-```bash
-go run main.go
-```
+   ```bash
+   go run main.go
+   ```
 
 3. Test the message queue using Python:
 
-### Linux
+   ### Linux
 
-```bash
-cd python_testing
-python3 -m venv venv
-source venv/bin/activate
-pip install pika
-python producer.py
-```
+   ```bash
+   cd python_testing
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install pika
+   python producer.py
+   ```
 
 ### Windows
 
-```bash
-cd python_testing
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install pika
-python producer.py
-```
+   ```bash
+   cd python_testing
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   pip install pika
+   python producer.py
+   ```
 
 ## Run the Go application
 
 1. Run the application run:
 
-```bash
-go run main.go
-```
+   ```bash
+   go run main.go
+   ```
 
 2. Run tests:
 
-```bash
-go test ./...
-```
+   ```bash
+   go test ./...
+   ```
 
 ## Python Message Queue script
 
