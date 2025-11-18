@@ -18,10 +18,20 @@ go run main.go
 
 3. Test the message queue using Python:
 
+### Linux
 ```bash
 cd python_testing
 python3 -m venv venv
 source venv/bin/activate
+pip install pika
+python producer.py
+```
+
+### Windows
+```bash
+cd python_testing
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install pika
 python producer.py
 ```

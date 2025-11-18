@@ -60,14 +60,14 @@ func main() {
 	}
 
 	dispatcher := worker.NewJobDispatcher(worker.JobDispatcherConfig{
-		JobChannel:     jobsCh,
-		CancelJobChan:  cancelJobCh,
-		ResultsChannel: resultsCh,
-		MetricsChannel: metricsCh,
-		WorkerManager:  wm,
-		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
-		ControllerImageName: controllerImageName,
-		Clock:          clockwork.NewRealClock(),
+		JobChannel:     		jobsCh,
+		CancelJobChan:  		cancelJobCh,
+		ResultsChannel: 		resultsCh,
+		MetricsChannel: 		metricsCh,
+		WorkerManager:  		wm,
+		NetworkManager: 		worker.NewDockerNetworkManager(appResources.DockerCli),
+		ControllerImageName: 	controllerImageName,
+		Clock:          		clockwork.NewRealClock(),
 	})
 
 	go dispatcher.Run(appResources.Ctx)
