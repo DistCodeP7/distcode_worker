@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -273,9 +272,9 @@ func (w *Worker) ExecuteTest(ctx context.Context, jobUID string, problemDir stri
 	}
 
 	if repoRoot != "" {
-		if data, err := ioutil.ReadFile(filepath.Join(repoRoot, "go.mod")); err == nil {
+		if data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod")); err == nil {
 			_ = os.MkdirAll(jobDir, 0755)
-			_ = ioutil.WriteFile(filepath.Join(jobDir, "go.mod"), data, 0644)
+			_ = os.WriteFile(filepath.Join(jobDir, "go.mod"), data, 0644)
 		}
 	}
 
@@ -289,7 +288,7 @@ func (w *Worker) ExecuteTest(ctx context.Context, jobUID string, problemDir stri
 	// Copy repository package files into job pkgPath if available
 	repoPkgDir := filepath.Join(repoRoot, "algorithms", problemDir)
 	if fi, err := os.Stat(repoPkgDir); err == nil && fi.IsDir() {
-		entries, err := ioutil.ReadDir(repoPkgDir)
+		entries, err := os.ReadDir(repoPkgDir)
 		if err == nil {
 			for _, e := range entries {
 				if e.IsDir() {
@@ -297,11 +296,11 @@ func (w *Worker) ExecuteTest(ctx context.Context, jobUID string, problemDir stri
 				}
 				src := filepath.Join(repoPkgDir, e.Name())
 				dst := filepath.Join(pkgPath, e.Name())
-				data, err := ioutil.ReadFile(src)
+				data, err := os.ReadFile(src)
 				if err != nil {
 					return fmt.Errorf("failed to read repo package file %s: %w", src, err)
 				}
-				if err := ioutil.WriteFile(dst, data, 0644); err != nil {
+				if err := os.WriteFile(dst, data, 0644); err != nil {
 					return fmt.Errorf("failed to copy package file %s: %w", dst, err)
 				}
 			}
@@ -310,13 +309,13 @@ func (w *Worker) ExecuteTest(ctx context.Context, jobUID string, problemDir stri
 
 	// Determine target package name
 	targetPkgName := problemDir
-	if entries, err := ioutil.ReadDir(pkgPath); err == nil {
+	if entries, err := os.ReadDir(pkgPath); err == nil {
 		pkgRe := regexp.MustCompile(`^\s*package\s+(\w+)`)
 		for _, e := range entries {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".go" {
 				continue
 			}
-			data, err := ioutil.ReadFile(filepath.Join(pkgPath, e.Name()))
+			data, err := os.ReadFile(filepath.Join(pkgPath, e.Name()))
 			if err != nil {
 				continue
 			}
@@ -341,7 +340,7 @@ func (w *Worker) ExecuteTest(ctx context.Context, jobUID string, problemDir stri
 		} else {
 			content = fmt.Sprintf("package %s\n\n%s", targetPkgName, content)
 		}
-		if err := ioutil.WriteFile(filepath.Join(pkgPath, fname), []byte(content), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(pkgPath, fname), []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write submission file: %w", err)
 		}
 	}
@@ -356,7 +355,7 @@ func (w *Worker) ExecuteTest(ctx context.Context, jobUID string, problemDir stri
 			return false
 		}
 		// check at least one .go file in the package dir
-		ents, err := ioutil.ReadDir(pkgPath)
+		ents, err := os.ReadDir(pkgPath)
 		if err != nil {
 			return false
 		}

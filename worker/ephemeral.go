@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -59,18 +58,18 @@ func RunEphemeralJob(ctx context.Context, dockerCli *client.Client, workerImage 
 	}
 
 	if repoGoModPath != "" {
-		data, err := ioutil.ReadFile(repoGoModPath)
+		data, err := os.ReadFile(repoGoModPath)
 		if err != nil {
 			return fmt.Errorf("failed to read repo go.mod: %w", err)
 		}
-		if err := ioutil.WriteFile(filepath.Join(hostPath, "go.mod"), data, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(hostPath, "go.mod"), data, 0644); err != nil {
 			return fmt.Errorf("failed to write go.mod into temp workspace: %w", err)
 		}
 	} else {
 		// If we couldn't find a go.mod, create a minimal one. This is a fallback
 		// and may fail if tests import module-local paths; prefer copying the real one.
 		minimal := "module tempjob\n\n go 1.20\n"
-		if err := ioutil.WriteFile(filepath.Join(hostPath, "go.mod"), []byte(minimal), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(hostPath, "go.mod"), []byte(minimal), 0644); err != nil {
 			return fmt.Errorf("failed to write minimal go.mod into temp workspace: %w", err)
 		}
 	}
@@ -79,7 +78,7 @@ func RunEphemeralJob(ctx context.Context, dockerCli *client.Client, workerImage 
 	// so tests have the supporting code. If the repo path doesn't exist, continue — tests may still fail.
 	repoPkgDir := filepath.Join(searchDir, "algorithms", problemDir)
 	if fi, err := os.Stat(repoPkgDir); err == nil && fi.IsDir() {
-		entries, err := ioutil.ReadDir(repoPkgDir)
+		entries, err := os.ReadDir(repoPkgDir)
 		if err == nil {
 			for _, e := range entries {
 				if e.IsDir() {
@@ -87,11 +86,11 @@ func RunEphemeralJob(ctx context.Context, dockerCli *client.Client, workerImage 
 				}
 				src := filepath.Join(repoPkgDir, e.Name())
 				dst := filepath.Join(pkgPath, e.Name())
-				data, err := ioutil.ReadFile(src)
+				data, err := os.ReadFile(src)
 				if err != nil {
 					return fmt.Errorf("failed to read repo package file %s: %w", src, err)
 				}
-				if err := ioutil.WriteFile(dst, data, 0644); err != nil {
+				if err := os.WriteFile(dst, data, 0644); err != nil {
 					return fmt.Errorf("failed to copy package file %s: %w", dst, err)
 				}
 			}
@@ -100,13 +99,13 @@ func RunEphemeralJob(ctx context.Context, dockerCli *client.Client, workerImage 
 
 	// Determine target package name by inspecting copied package files (if any).
 	targetPkgName := problemDir
-	if entries, err := ioutil.ReadDir(pkgPath); err == nil {
+	if entries, err := os.ReadDir(pkgPath); err == nil {
 		pkgRe := regexp.MustCompile(`^\s*package\s+(\w+)`)
 		for _, e := range entries {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".go" {
 				continue
 			}
-			data, err := ioutil.ReadFile(filepath.Join(pkgPath, e.Name()))
+			data, err := os.ReadFile(filepath.Join(pkgPath, e.Name()))
 			if err != nil {
 				continue
 			}
@@ -136,7 +135,7 @@ func RunEphemeralJob(ctx context.Context, dockerCli *client.Client, workerImage 
 		}
 
 		target := filepath.Join(pkgPath, fname)
-		if err := ioutil.WriteFile(target, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(target, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", target, err)
 		}
 	}
