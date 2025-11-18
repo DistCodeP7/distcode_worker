@@ -6,13 +6,16 @@ import (
 	"testing"
 )
 
-func TestParseFlagsDefualts(t *testing.T) {
-	image, workers, capacity := ParseFlags()
+func TestParseFlagsDefaults(t *testing.T) {
+	workerImage, controllerImage, workers, capacity := ParseFlags()
 
 	expectedWorkers := 4
 
-	if image != "golang:1.25" {
-		t.Errorf("Expected default image 'golang:1.25', got '%s'", image)
+	if workerImage != "golang:1.25" {
+		t.Errorf("Expected default image 'golang:1.25', got '%s'", workerImage)
+	}
+	if controllerImage != "" {
+		t.Errorf("Expected default controller image '', got '%s'", controllerImage)
 	}
 	if workers != expectedWorkers {
 		t.Errorf("Expected default workers 4, got %d", workers)
@@ -28,12 +31,15 @@ func TestParseFlagsWithCustomValues(t *testing.T) {
 	// Save original os.Args and restore after test
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
-	os.Args = []string{"cmd", "-i", "customimage:latest", "-w", "10", "-c", "50"}
+	os.Args = []string{"cmd", "-iWorker", "customimage:latest", "-w", "10", "-c", "50"}
 
-	image, workers, capacity := ParseFlags()
+	workerImage, controllerImage, workers, capacity := ParseFlags()
 
-	if image != "customimage:latest" {
-		t.Errorf("Expected image 'customimage:latest', got '%s'", image)
+	if workerImage != "customimage:latest" {
+		t.Errorf("Expected image 'customimage:latest', got '%s'", workerImage)
+	}
+	if controllerImage != "" {
+		t.Errorf("Expected default controller image '', got '%s'", controllerImage)
 	}
 	if workers != 10 {
 		t.Errorf("Expected workers 10, got %d", workers)

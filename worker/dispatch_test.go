@@ -160,10 +160,10 @@ func (m *MockWorkerManager) Shutdown() error {
 
 // MockNetworkManager provides a mock implementation of the NetworkManagerInterface.
 type MockNetworkManager struct {
-	CreateAndConnectFunc func(ctx context.Context, workers []WorkerInterface) (cleanup func(), err error)
+	CreateAndConnectFunc func(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkId string, err error)
 }
 
-func (m *MockNetworkManager) CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), err error) {
+func (m *MockNetworkManager) CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkId string, err error) {
 	return m.CreateAndConnectFunc(ctx, workers)
 }
 
@@ -192,8 +192,8 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 	}
 
 	mockNM := &MockNetworkManager{
-		CreateAndConnectFunc: func(ctx context.Context, workers []WorkerInterface) (cleanup func(), err error) {
-			return func() {}, nil
+		CreateAndConnectFunc: func(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkName string, err error) {
+			return func() {}, "", nil
 		},
 	}
 

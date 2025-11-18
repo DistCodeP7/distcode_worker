@@ -12,10 +12,10 @@ import (
 
 func main() {
 	// Parse command line flags
-	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
+	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 
 	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
-	appResources, err := setup.SetupApp(workerImageName)
+	appResources, err := setup.SetupApp(workerImageName, controllerImageName)
 	if err != nil {
 		log.Fatalf("Fatal error in setup: %v", err)
 	}
@@ -66,6 +66,7 @@ func main() {
 		MetricsChannel: metricsCh,
 		WorkerManager:  wm,
 		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
+		ControllerImageName: controllerImageName,
 		Clock:          clockwork.NewRealClock(),
 	})
 

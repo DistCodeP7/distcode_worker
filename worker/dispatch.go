@@ -10,6 +10,8 @@ import (
 
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/utils"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/jonboulle/clockwork"
 )
 
@@ -20,6 +22,7 @@ type JobDispatcherConfig struct {
 	MetricsChannel chan<- types.StreamingJobEvent // send-only
 	WorkerManager  WorkerManagerInterface         // assumes non-nil
 	NetworkManager NetworkManagerInterface        // assumes non-nil
+	ControllerImageName string                      // assumes non-nil
 	Clock          clockwork.Clock                // Optional, for testing purposes
 	FlushInterval  time.Duration                  // Optional, for testing purposes
 }
@@ -31,6 +34,7 @@ type JobDispatcher struct {
 	metricsChannel chan<- types.StreamingJobEvent
 	workerManager  WorkerManagerInterface
 	networkManager NetworkManagerInterface
+	ControllerImageName string
 	Clock          clockwork.Clock
 	FlushInterval  time.Duration
 	mu             sync.Mutex
@@ -44,7 +48,7 @@ type WorkerManagerInterface interface {
 }
 
 type NetworkManagerInterface interface {
-	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), err error)
+	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkName string, err error)
 }
 
 func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
@@ -137,7 +141,8 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		d.mu.Unlock()
 	}()
 
-	cleanupNetwork, err := d.networkManager.CreateAndConnect(jobCtx, workers)
+	// Create network and connect workers
+	cleanupNetwork, networkName, err := d.networkManager.CreateAndConnect(jobCtx, workers)
 	if err != nil {
 		log.Printf("Failed to setup network for job %d: %v", job.ProblemId, err)
 		_ = d.workerManager.ReleaseJob(job.ProblemId)
@@ -145,6 +150,22 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		return
 	}
 	defer cleanupNetwork()
+
+	// Start DSNet controller in the created network
+	controllerID, err := d.startDSNetController(jobCtx, networkName, job)
+	if err != nil {
+		log.Printf("Failed to start DSNet controller for job %d: %v", job.ProblemId, err)
+		_ = d.workerManager.ReleaseJob(job.ProblemId)
+		d.sendJobError(job, err)
+		return
+	}
+	defer d.cleanupController(jobCtx, controllerID)
+
+	// Allow some time for network and controller setup
+	time.Sleep(500 * time.Millisecond) 
+
+	setupEndT := time.Now()
+	log.Printf("Setup for job %v took %v", job.ProblemId, setupEndT.Sub(setupStartT))
 
 	ea := EventAggregator{
 		wg:             sync.WaitGroup{},
@@ -171,12 +192,19 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		}
 	}
 
-	endT := time.Now()
+	if err = d.workerManager.ReleaseJob(job.ProblemId); err != nil {
+		d.sendJobError(job, err)
+	}
+
+	cleanupTimedFlush()
+	<-flushDone
+
+	log.Printf("Finished job %v", job.ProblemId)
 
 	jobMetric := &types.JobMetricPayload{
 		SchedulingDelay: setupStartT.Sub(submissionT),
-		ExecutionTime:   endT.Sub(setupStartT),
-		TotalTime:       endT.Sub(submissionT),
+		ExecutionTime:   setupEndT.Sub(setupStartT),
+		TotalTime:       setupEndT.Sub(submissionT),
 	}
 
 	jobMetricEvent := types.StreamingJobEvent{
@@ -197,15 +225,63 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 			log.Printf("Dropped job metric for job %v (channel full)", job.ProblemId)
 		}
 	}
+}
 
-	if err = d.workerManager.ReleaseJob(job.ProblemId); err != nil {
-		d.sendJobError(job, err)
+func (d *JobDispatcher) startDSNetController(ctx context.Context, networkName string, job types.JobRequest) (string, error) {
+	containerName := fmt.Sprintf("dsnet-controller-%s", job.JobUID.String())
+
+	dockerNetworkMgr, ok := d.networkManager.(*DockerNetworkManager)
+	if !ok {
+		return "", fmt.Errorf("network manager is not a DockerNetworkManager")
+	}
+	cli := dockerNetworkMgr.GetDockerClient()
+
+	resp, err := cli.ContainerCreate(ctx, 
+		&container.Config{
+			Image: 		d.ControllerImageName,
+			Hostname : 	"dsnet-controller",
+		},
+		&container.HostConfig{
+			NetworkMode: container.NetworkMode(networkName),
+		}, 
+		&network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				networkName: {
+					Aliases: []string{"dsnet-controller"},
+				},
+			},
+		}, 
+		nil, 
+		containerName,
+	)
+	
+	if err != nil {
+		return "", fmt.Errorf("failed to create DSNet controller container: %w", err)
 	}
 
-	cleanupTimedFlush()
-	<-flushDone
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("failed to start DSNet controller container: %w", err)
+	}
 
-	log.Printf("Finished job %v", job.ProblemId)
+	log.Printf("Started DSNet controller %s in networkk %s", resp.ID[:12], networkName)
+	return resp.ID, nil
+}
+
+func (d *JobDispatcher) cleanupController(ctx context.Context, controllerID string) {
+	dockerNetworkMgr, ok := d.networkManager.(*DockerNetworkManager)
+	if !ok {
+		log.Printf("network manager is not a DockerNetworkManager, cannot cleanup controller %s", controllerID)
+		return
+	}
+	cli := dockerNetworkMgr.dockerCli
+
+	timeout := 5
+	if err := cli.ContainerStop(ctx, controllerID, container.StopOptions{Timeout: &timeout}); err != nil {
+		log.Printf("Failed to stop DSNet controller %s: %v", controllerID, err)
+	}
+	if err := cli.ContainerRemove(ctx, controllerID, container.RemoveOptions{Force: true}); err != nil {
+		log.Printf("Failed to remove DSNet controller %s: %v", controllerID, err)
+	}
 }
 
 // requestWorkerReservation tries to reserve the required number of workers for the job.

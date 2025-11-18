@@ -31,7 +31,7 @@ type AppResources struct {
 // It also pre-warms the cache by running a dummy container.
 // Returns an AppResources struct containing the context, cancel function, and Docker client.
 // If any step fails, it cleans up resources and returns an error.
-func SetupApp(workerImageName string) (*AppResources, error) {
+func SetupApp(workerImageName string, controllerImageName string) (*AppResources, error) {
 	// Setup context with cancellation on interrupt signals
 	ctx, cancel := context.WithCancel(context.Background())
 	handleSignals(cancel)
@@ -51,6 +51,12 @@ func SetupApp(workerImageName string) (*AppResources, error) {
 		return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
 	}
 	log.Printf("Image '%s' is ready.", workerImageName)
+
+	if err := prePullImage(ctx, cli, controllerImageName); err != nil {
+		cli.Close()
+		cancel()
+		return nil, fmt.Errorf("failed to pre-pull image %s: %w", controllerImageName, err)
+	}
 
 	// Pre-warm the cache by running a dummy container
 	if err := prewarmCache(ctx, cli, workerImageName); err != nil {
