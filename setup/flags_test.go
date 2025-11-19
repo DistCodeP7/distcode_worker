@@ -11,11 +11,11 @@ func TestParseFlagsDefaults(t *testing.T) {
 
 	expectedWorkers := 4
 
-	if workerImage != "golang:1.25" {
-		t.Errorf("Expected default image 'golang:1.25', got '%s'", workerImage)
+	if workerImage != "ghcr.io/distcodep7/dsnet:latest" {
+		t.Errorf("Expected default image 'ghcr.io/distcodep7/dsnet:latest', got '%s'", workerImage)
 	}
-	if controllerImage != "" {
-		t.Errorf("Expected default controller image '', got '%s'", controllerImage)
+	if controllerImage != "ghcr.io/distcodep7/dsnet-controller:latest" {
+		t.Errorf("Expected default controller image 'ghcr.io/distcodep7/dsnet-controller:latest', got '%s'", controllerImage)
 	}
 	if workers != expectedWorkers {
 		t.Errorf("Expected default workers 4, got %d", workers)
@@ -38,8 +38,8 @@ func TestParseFlagsWithCustomValues(t *testing.T) {
 	if workerImage != "customimage:latest" {
 		t.Errorf("Expected image 'customimage:latest', got '%s'", workerImage)
 	}
-	if controllerImage != "" {
-		t.Errorf("Expected default controller image '', got '%s'", controllerImage)
+	if controllerImage != "ghcr.io/distcodep7/dsnet-controller:latest" {
+		t.Errorf("Expected default controller image 'ghcr.io/distcodep7/dsnet-controller:latest', got '%s'", controllerImage)
 	}
 	if workers != 10 {
 		t.Errorf("Expected workers 10, got %d", workers)

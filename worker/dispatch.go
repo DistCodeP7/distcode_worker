@@ -150,20 +150,25 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		return
 	}
 
-	// Start DSNet controller in the created network
-	controllerID, err := d.startDSNetController(jobCtx, networkName, job)
-	if err != nil {
-		log.Printf("Failed to start DSNet controller for job %d: %v", job.ProblemId, err)
-		_ = d.workerManager.ReleaseJob(job.ProblemId)
-		d.sendJobError(job, err)
-		cleanupNetwork()
-		return
+	// Start DSNet controller in the created network (only if configured)
+	var controllerID string
+	if d.ControllerImageName != "" {
+		controllerID, err = d.startDSNetController(jobCtx, networkName, job)
+		if err != nil {
+			log.Printf("Failed to start DSNet controller for job %d: %v", job.ProblemId, err)
+			_ = d.workerManager.ReleaseJob(job.ProblemId)
+			d.sendJobError(job, err)
+			cleanupNetwork()
+			return
+		}
 	}
 
 	// Defer in reverse order: network cleanup first (defers are LIFO)
 	// This way controller cleanup runs before network cleanup
 	defer cleanupNetwork()
-	defer d.cleanupController(context.Background(), controllerID)
+	if controllerID != "" {
+		defer d.cleanupController(context.Background(), controllerID)
+	}
 
 	// Allow some time for network and controller setup
 	time.Sleep(500 * time.Millisecond)
@@ -485,14 +490,13 @@ func (e *EventAggregator) flushRemainingEvents(job types.JobRequest) {
 	}
 
 	// Send final non-metric events with SequenceIndex -1 to signal end
-	if len(resultEvents) > 0 {
-		e.resultsChannel <- types.StreamingJobEvent{
-			JobUID:        job.JobUID,
-			ProblemId:     job.ProblemId,
-			UserId:        job.UserId,
-			SequenceIndex: -1,
-			Events:        resultEvents,
-		}
+	// Always send this message, even if empty, to signal job completion
+	e.resultsChannel <- types.StreamingJobEvent{
+		JobUID:        job.JobUID,
+		ProblemId:     job.ProblemId,
+		UserId:        job.UserId,
+		SequenceIndex: -1,
+		Events:        resultEvents,
 	}
 
 	// Send final metric events
