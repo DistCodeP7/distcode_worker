@@ -65,7 +65,13 @@ In order to test the worker you can publish some code messages to the RabbitMQ q
    pip install pika
    ```
 
-2. Run the script to publish messages:
+2. Run the script to monitor messages:
+
+   ```bash
+   python consumer.py
+   ```
+
+3. Run the script to publish messages:
 
    ```bash
    python producer.py

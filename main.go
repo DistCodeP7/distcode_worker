@@ -46,7 +46,7 @@ func main() {
 
 	workers := make([]worker.WorkerInterface, numWorkers)
 	for i := range numWorkers {
-		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
+		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, appResources.WorkerImage)
 		if err != nil {
 			log.Fatalf("Failed to create worker: %v", err)
 		}
@@ -66,7 +66,7 @@ func main() {
 		MetricsChannel: 		metricsCh,
 		WorkerManager:  		wm,
 		NetworkManager: 		worker.NewDockerNetworkManager(appResources.DockerCli),
-		ControllerImageName: 	controllerImageName,
+		ControllerImageName: 	appResources.ControllerImage,
 		Clock:          		clockwork.NewRealClock(),
 	})
 
