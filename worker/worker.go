@@ -36,6 +36,9 @@ type WorkerInterface interface {
 	// runs `go test` for the given problemDir inside the running container, streams stdout/stderr
 	// to the provided channels, and cleans up the per-job files when finished.
 	ExecuteTest(ctx context.Context, jobUID string, problemDir string, files []string, stdoutCh, stderrCh chan string) error
+	// RunCommand executes the given command (as args) inside the worker container and
+	// streams stdout/stderr to the provided channels.
+	RunCommand(ctx context.Context, cmd []string, stdoutCh, stderrCh chan string) error
 }
 
 var _ WorkerInterface = (*Worker)(nil)
@@ -197,6 +200,62 @@ func (w *Worker) ExecuteCode(ctx context.Context, code string, stdoutCh, stderrC
 
 	if inspectResp.ExitCode != 0 {
 		return fmt.Errorf("execution finished with non-zero exit code: %d", inspectResp.ExitCode)
+	}
+
+	return nil
+}
+
+// RunCommand executes an arbitrary command inside the worker container and streams its output.
+func (w *Worker) RunCommand(ctx context.Context, cmd []string, stdoutCh, stderrCh chan string) error {
+	execConfig := container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdout: true,
+		AttachStderr: true,
+		WorkingDir:   "/app",
+	}
+
+	execID, err := w.dockerCli.ContainerExecCreate(ctx, w.containerID, execConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create exec instance: %w", err)
+	}
+
+	hijackedResp, err := w.dockerCli.ContainerExecAttach(ctx, execID.ID, container.ExecStartOptions{Detach: false, Tty: false})
+	if err != nil {
+		return fmt.Errorf("failed to attach to exec instance: %w", err)
+	}
+	defer hijackedResp.Close()
+
+	stdoutWriter := newChannelWriter(stdoutCh)
+	stderrWriter := newChannelWriter(stderrCh)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := stdcopy.StdCopy(
+			stdoutWriter,
+			stderrWriter,
+			hijackedResp.Reader,
+		)
+		stdoutWriter.Flush()
+		stderrWriter.Flush()
+		done <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("failed to stream output: %w", err)
+		}
+	}
+
+	inspectResp, err := w.dockerCli.ContainerExecInspect(ctx, execID.ID)
+	if err != nil {
+		return fmt.Errorf("failed to inspect exec instance: %w", err)
+	}
+
+	if inspectResp.ExitCode != 0 {
+		return fmt.Errorf("command finished with non-zero exit code: %d", inspectResp.ExitCode)
 	}
 
 	return nil

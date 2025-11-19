@@ -150,6 +150,17 @@ func (m *ControllableMockWorker) ExecuteTest(ctx context.Context, jobUID string,
 	return nil
 }
 
+// RunCommand mirrors the behaviour of ExecuteTest for tests that use the new
+// RunCommand method: emit a periodic message and then block until cancelled.
+func (m *ControllableMockWorker) RunCommand(ctx context.Context, cmd []string, stdoutCh, stderrCh chan string) error {
+	stdoutCh <- "periodic flush message"
+	if m.messageSent != nil {
+		close(m.messageSent)
+	}
+	<-ctx.Done()
+	return nil
+}
+
 // MockWorkerManager provides a mock implementation of the WorkerManagerInterface.
 
 type MockWorkerManager struct {

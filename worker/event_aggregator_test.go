@@ -173,6 +173,17 @@ func (fw *fakeWorker) ExecuteTest(ctx context.Context, jobUID string, problemDir
 	return fw.err
 }
 
+// RunCommand satisfies the WorkerInterface for tests that use the new RunCommand method.
+func (fw *fakeWorker) RunCommand(ctx context.Context, cmd []string, stdoutCh, stderrCh chan string) error {
+	for _, line := range fw.stdout {
+		stdoutCh <- line
+	}
+	for _, line := range fw.stderr {
+		stderrCh <- line
+	}
+	return fw.err
+}
+
 func (w *fakeWorker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
 	return nil
 }

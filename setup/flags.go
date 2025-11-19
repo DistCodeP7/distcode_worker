@@ -11,7 +11,7 @@ import "flag"
 //	-c int: The capacity of the jobs channel (default 2 * workers).
 func ParseFlags() (string, int, int) {
 	workerImageName := flag.String("i", "golang:1.25", "The Docker image to use for workers")
-	numWorkers := flag.Int("w", 4, "The number of worker goroutines to start")
+	numWorkers := flag.Int("w", 8, "The number of worker goroutines to start")
 	jobsCapacityFlag := flag.Int("c", -1, "The capacity of the jobs channel (optional)")
 
 	flag.Parse()

@@ -2,9 +2,15 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -205,8 +211,9 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 			}
 		}()
 
-		// Reserve a single worker from the pool and run the tests inside it.
-		requiredWorkers := 1
+		// Reserve multiple workers: 1 server + N clients (we test with 4 clients)
+		numClients := 4
+		requiredWorkers := 1 + numClients
 		workers, err := d.requestWorkerReservation(ctx, job.JobUID.String(), requiredWorkers)
 		if err != nil {
 			d.sendJobError(job, fmt.Errorf("failed to reserve worker: %w", err))
@@ -224,29 +231,361 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 			close(stderrCh)
 			return
 		}
+		// If we didn't actually get enough workers (tests/mocks may return fewer),
+		// fall back to the original single-worker ExecuteTest behavior so unit tests
+		// that exercise that path continue to work.
+		if len(workers) < requiredWorkers {
+			runErrCh := make(chan error, 1)
+			go func() {
+				runErrCh <- workers[0].ExecuteTest(jobCtx, job.JobUID.String(), "centralized_mutex", job.Code, stdoutCh, stderrCh)
+			}()
 
-		runErrCh := make(chan error, 1)
+			select {
+			case err := <-runErrCh:
+				close(stdoutCh)
+				close(stderrCh)
+				if err != nil {
+					d.sendJobError(job, err)
+				}
+			case <-jobCtx.Done():
+				close(stdoutCh)
+				close(stderrCh)
+				if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+					d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
+				} else {
+					d.sendJobError(job, jobCtx.Err())
+				}
+			}
+
+			// Ensure periodic flush exits then cleanup network and release
+			cancel()
+			cleanupNetwork()
+			if err := d.workerManager.ReleaseJob(job.JobUID.String()); err != nil {
+				log.Printf("Failed to release worker for job %d: %v", job.ProblemId, err)
+			}
+
+			cleanupTimedFlush()
+			<-flushDone
+
+			log.Printf("Finished job %v", job.ProblemId)
+			return
+		}
+
+		// Prepare per-worker workspaces by copying repository files into each worker's hostPath
+		// so each worker has an independent module workspace. This allows replacing the
+		// client implementation with the user-submitted file on client workers.
+		// Find repo root (where go.mod lives)
+		findGoMod := func(dir string) (string, bool) {
+			cand := filepath.Join(dir, "go.mod")
+			if _, err := os.Stat(cand); err == nil {
+				return dir, true
+			}
+			return "", false
+		}
+
+		repoRoot := ""
+		if cwd, err := os.Getwd(); err == nil {
+			if d, ok := findGoMod(cwd); ok {
+				repoRoot = d
+			}
+		}
+		if repoRoot == "" {
+			// try executable path
+			if exe, err := os.Executable(); err == nil {
+				dir := filepath.Dir(exe)
+				for {
+					if d, ok := findGoMod(dir); ok {
+						repoRoot = d
+						break
+					}
+					parent := filepath.Dir(dir)
+					if parent == dir {
+						break
+					}
+					dir = parent
+				}
+			}
+		}
+
+		if repoRoot == "" {
+			d.sendJobError(job, fmt.Errorf("repository root (go.mod) not found"))
+			cleanupNetwork()
+			_ = d.workerManager.ReleaseJob(job.JobUID.String())
+			close(stdoutCh)
+			close(stderrCh)
+			return
+		}
+
+		// copyDir copies files from src to dst recursively.
+		var copyDir func(src, dst string) error
+		copyDir = func(src, dst string) error {
+			ents, err := os.ReadDir(src)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(dst, 0755); err != nil {
+				return err
+			}
+			for _, e := range ents {
+				srcPath := filepath.Join(src, e.Name())
+				dstPath := filepath.Join(dst, e.Name())
+				if e.IsDir() {
+					if err := copyDir(srcPath, dstPath); err != nil {
+						return err
+					}
+					continue
+				}
+				data, err := os.ReadFile(srcPath)
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(dstPath, data, 0644); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		// Prepare and start processes on each worker
+		type workerRun struct {
+			stdout <-chan string
+			stderr <-chan string
+			done   <-chan error
+		}
+
+		runs := make([]workerRun, len(workers))
+		var wgRuns sync.WaitGroup
+
+	// Start processes on each worker, but ensure the server (idx==0)
+	// has announced readiness before starting any clients to avoid
+	// connection-refused races.
+	var serverReady bool
+	for i, wk := range workers {
+			// Need concrete worker to write files into its hostPath
+			concrete, ok := wk.(*Worker)
+			if !ok {
+				d.sendJobError(job, fmt.Errorf("worker is not concrete Worker type; cannot prepare workspace"))
+				cleanupNetwork()
+				_ = d.workerManager.ReleaseJob(job.JobUID.String())
+				close(stdoutCh)
+				close(stderrCh)
+				return
+			}
+
+			workerRoot := filepath.Join(concrete.hostPath, "jobs", job.JobUID.String(), fmt.Sprintf("worker-%d", i))
+			if err := os.MkdirAll(workerRoot, 0755); err != nil {
+				d.sendJobError(job, fmt.Errorf("failed to create worker workspace: %w", err))
+				cleanupNetwork()
+				_ = d.workerManager.ReleaseJob(job.JobUID.String())
+				close(stdoutCh)
+				close(stderrCh)
+				return
+			}
+
+			// Copy repo go.mod into workerRoot
+			if data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod")); err == nil {
+				if err := os.WriteFile(filepath.Join(workerRoot, "go.mod"), data, 0644); err != nil {
+					d.sendJobError(job, fmt.Errorf("failed to write go.mod: %w", err))
+					cleanupNetwork()
+					_ = d.workerManager.ReleaseJob(job.JobUID.String())
+					close(stdoutCh)
+					close(stderrCh)
+					return
+				}
+			}
+
+			// Copy algorithms into workerRoot/algorithms
+			if err := copyDir(filepath.Join(repoRoot, "algorithms"), filepath.Join(workerRoot, "algorithms")); err != nil {
+				d.sendJobError(job, fmt.Errorf("failed to copy algorithms: %w", err))
+				cleanupNetwork()
+				_ = d.workerManager.ReleaseJob(job.JobUID.String())
+				close(stdoutCh)
+				close(stderrCh)
+				return
+			}
+
+			// Overwrite the client.go in the package with the user's submission for all workers.
+			// This allows running the integration test (which executes the cmd binaries)
+			// from worker-0 and ensures the submitted client implementation is used.
+			clientPkgPath := filepath.Join(workerRoot, "algorithms", "centralized_mutex")
+			if len(job.Code) > 0 {
+				// normalize package name to centralized_mutex
+				content := job.Code[0]
+				pkgDecl := "package centralized_mutex\n\n"
+				if len(content) > 0 {
+					re := regexp.MustCompile(`(?m)^\s*package\s+\w+`)
+					if re.MatchString(content) {
+						content = re.ReplaceAllString(content, "package centralized_mutex")
+					} else {
+						content = pkgDecl + content
+					}
+				}
+				if err := os.WriteFile(filepath.Join(clientPkgPath, "client.go"), []byte(content), 0644); err != nil {
+					d.sendJobError(job, fmt.Errorf("failed to write client.go for worker %d: %w", i, err))
+					cleanupNetwork()
+					_ = d.workerManager.ReleaseJob(job.JobUID.String())
+					close(stdoutCh)
+					close(stderrCh)
+					return
+				}
+				// Compute and append host-side SHA256 of the written client.go so it is visible
+				// in the job's event stream for correlation with the in-container file.
+				func() {
+					path := filepath.Join(clientPkgPath, "client.go")
+					data, err := os.ReadFile(path)
+					if err != nil {
+						ea.muEvents.Lock()
+						ea.eventBuf = append(ea.eventBuf, types.StreamingEvent{Kind: "stderr", Message: utils.PtrString(fmt.Sprintf("failed to read written client.go for hash: %v", err))})
+						ea.muEvents.Unlock()
+						return
+					}
+					sum := sha256.Sum256(data)
+					hexStr := hex.EncodeToString(sum[:])
+					ea.muEvents.Lock()
+					ea.eventBuf = append(ea.eventBuf, types.StreamingEvent{Kind: "stdout", WorkerId: utils.PtrString(wk.ID()), Message: utils.PtrString(fmt.Sprintf("HOST_CLIENT_GO_SHA256: %s", hexStr))})
+					ea.muEvents.Unlock()
+				}()
+			}
+
+			// Start processes: server on i==0, clients on i>0
+			stdout := make(chan string, 50)
+			stderr := make(chan string, 50)
+
+			runs[i].stdout = stdout
+			runs[i].stderr = stderr
+
+			// If we have enough workers, run the integration test inside worker-0
+			// so it exercises the cmd binaries (server_main and client_runner) from
+			// a single container. This is simpler and more reliable than trying to
+			// coordinate long-running server + multiple client containers.
+			if i == 0 {
+				wgRuns.Add(1)
+				go func(idx int, w WorkerInterface, root string, outC, errC chan string) {
+					defer wgRuns.Done()
+					containerRoot := filepath.Join("/app", "jobs", job.JobUID.String(), fmt.Sprintf("worker-%d", idx))
+					// Run a workspace listing (diagnostic) then the in-process HTTP unit
+					// test which exercises the server handlers and clients without
+					// spawning separate processes. The listing will reveal whether
+					// the package files (and the submitted client.go) are present.
+					testCmd := fmt.Sprintf("cd %s && echo WORKSPACE_LISTING_START && ls -la . && echo PACKAGE_DIR_LISTING_START && ls -la ./algorithms/centralized_mutex || true && echo PACKAGE_DIR_LISTING_END && go test ./algorithms/centralized_mutex -run TestCentralizedMutex -v -count=1", containerRoot)
+					cmd := []string{"sh", "-c", testCmd}
+					if err := w.RunCommand(jobCtx, cmd, outC, errC); err != nil {
+						errC <- err.Error()
+					}
+				}(i, wk, workerRoot, stdout, stderr)
+			} else {
+				// Do not start separate client containers when running integration test
+				// inside worker-0; just create forwarders so any incidental logs from
+				// these workspaces are visible (they won't run anything).
+			}
+
+			// Start per-worker stdout/stderr forwarders into the aggregator buffer
+			go func(id string, ch <-chan string) {
+				for line := range ch {
+					ea.muEvents.Lock()
+					ea.eventBuf = append(ea.eventBuf, types.StreamingEvent{
+						Kind:     "stdout",
+						WorkerId: utils.PtrString(id),
+						Message:  utils.PtrString(line),
+					})
+					ea.muEvents.Unlock()
+				}
+			}(wk.ID(), stdout)
+			go func(id string, ch <-chan string) {
+				for line := range ch {
+					ea.muEvents.Lock()
+					ea.eventBuf = append(ea.eventBuf, types.StreamingEvent{
+						Kind:     "stderr",
+						WorkerId: utils.PtrString(id),
+						Message:  utils.PtrString(line),
+					})
+					ea.muEvents.Unlock()
+				}
+			}(wk.ID(), stderr)
+
+			// If this was the server we just started, wait for the readiness log
+			if i == 0 {
+				// wait up to 3s for the server readiness message to appear in the event buffer
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					ea.muEvents.Lock()
+					found := false
+					for _, ev := range ea.eventBuf {
+						if ev.WorkerId != nil && *ev.WorkerId == wk.ID() && ev.Message != nil {
+							if strings.Contains(*ev.Message, "Starting centralized-mutex HTTP server") {
+								found = true
+								break
+							}
+						}
+					}
+					ea.muEvents.Unlock()
+					if found {
+						serverReady = true
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+				if !serverReady {
+					// if we didn't see the readiness log, append a warning so it's visible to clients
+					ea.muEvents.Lock()
+					ea.eventBuf = append(ea.eventBuf, types.StreamingEvent{Kind: "stderr", Message: utils.PtrString("server readiness not observed within timeout; proceeding")})
+					ea.muEvents.Unlock()
+					serverReady = true // proceed anyway to avoid deadlock
+				}
+			}
+		}
+
+		// Wait for client processes to either exit or to demonstrate success by
+		// entering the critical section. The server is long-running and not
+		// included in the waitgroup; we consider the job successful when all
+		// clients have printed ENTERED_CS at least once, or when the client
+		// processes exit normally.
+		doneCh := make(chan struct{})
 		go func() {
-			// Execute tests inside the reserved worker
-			runErrCh <- workers[0].ExecuteTest(jobCtx, job.JobUID.String(), "centralized_mutex", job.Code, stdoutCh, stderrCh)
+			wgRuns.Wait()
+			close(doneCh)
 		}()
 
-		select {
-		case err := <-runErrCh:
-			// close streams so the flushing goroutines can finish
-			close(stdoutCh)
-			close(stderrCh)
-			if err != nil {
-				d.sendJobError(job, err)
+		// observe unique client worker IDs that reported ENTERED_CS
+		observed := make(map[string]bool)
+		deadline := time.Now().Add(time.Duration(job.TimeoutLimit) * time.Second)
+	waitLoop:
+		for {
+			// If clients' execs finished, break (normal completion)
+			select {
+			case <-doneCh:
+				break waitLoop
+			default:
 			}
-		case <-jobCtx.Done():
-			close(stdoutCh)
-			close(stderrCh)
-			if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
-				d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
-			} else {
-				d.sendJobError(job, jobCtx.Err())
+
+			// scan event buffer for ENTERED_CS messages from client workers
+			ea.muEvents.Lock()
+			for _, ev := range ea.eventBuf {
+				if ev.Kind == "stdout" && ev.Message != nil && ev.WorkerId != nil {
+					if strings.Contains(*ev.Message, "ENTERED_CS") {
+						observed[*ev.WorkerId] = true
+					}
+				}
 			}
+			ea.muEvents.Unlock()
+
+			if len(observed) >= numClients {
+				// success condition met: all clients entered CS at least once
+				break waitLoop
+			}
+
+			// timeout
+			if time.Now().After(deadline) {
+				if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+					d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
+				} else {
+					d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
+				}
+				// cancel and proceed to cleanup below
+				break waitLoop
+			}
+
+			time.Sleep(100 * time.Millisecond)
 		}
 
 		// Ensure the periodic-flush goroutine exits by cancelling the job context

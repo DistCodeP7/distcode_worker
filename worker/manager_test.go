@@ -48,6 +48,12 @@ func (m *MockWorker) ExecuteCode(ctx context.Context, code string, stdoutCh, std
 	return nil
 }
 
+// RunCommand writes MockOutput to stdout and returns nil to satisfy the WorkerInterface.
+func (m *MockWorker) RunCommand(ctx context.Context, cmd []string, stdoutCh, stderrCh chan string) error {
+	stdoutCh <- MockOutput
+	return nil
+}
+
 // ExecuteTest implements the WorkerInterface ExecuteTest used by new code paths in tests.
 func (m *MockWorker) ExecuteTest(ctx context.Context, jobUID string, problemDir string, files []string, stdoutCh, stderrCh chan string) error {
 	stdoutCh <- MockOutput
