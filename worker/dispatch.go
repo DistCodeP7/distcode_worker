@@ -467,7 +467,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 					// test which exercises the server handlers and clients without
 					// spawning separate processes. The listing will reveal whether
 					// the package files (and the submitted client.go) are present.
-					testCmd := fmt.Sprintf("cd %s && echo WORKSPACE_LISTING_START && ls -la . && echo PACKAGE_DIR_LISTING_START && ls -la ./algorithms/centralized_mutex || true && echo PACKAGE_DIR_LISTING_END && go test ./algorithms/centralized_mutex -run TestCentralizedMutex -v -count=1", containerRoot)
+					testCmd := fmt.Sprintf("cd %s || true && go test ./algorithms/centralized_mutex -run TestCentralizedMutex -v -count=1", containerRoot)
 					cmd := []string{"sh", "-c", testCmd}
 					if err := w.RunCommand(jobCtx, cmd, outC, errC); err != nil {
 						errC <- err.Error()
