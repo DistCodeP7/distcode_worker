@@ -19,7 +19,7 @@ func TestSendJobErrorResult(t *testing.T) {
 	}
 	dispatcher.sendJobError(types.JobRequest{
 		ProblemId:    1,
-		UserId:       42,
+		UserId:       "42",
 		Code:         []string{"print('Hello, World!')"},
 		TimeoutLimit: 1,
 	}, errors.New("Test error"))
@@ -28,7 +28,7 @@ func TestSendJobErrorResult(t *testing.T) {
 	assert.Equal(t, "error", result.Events[0].Kind)
 	assert.Equal(t, "Test error", *result.Events[0].Message)
 	assert.Equal(t, 1, result.ProblemId)
-	assert.Equal(t, 42, result.UserId)
+	assert.Equal(t, "42", result.UserId)
 	assert.Equal(t, -1, result.SequenceIndex)
 }
 
@@ -207,7 +207,7 @@ func TestProcessJob_SendsPeriodicAndFinalFlush(t *testing.T) {
 
 	job := types.JobRequest{
 		ProblemId:    1,
-		UserId:       42,
+		UserId:       "42",
 		Code:         []string{"some code"},
 		TimeoutLimit: 10,
 	}
