@@ -181,28 +181,6 @@ func prePullImage(ctx context.Context, cli *client.Client, imageName string) (st
 	}
 	log.Printf("Image '%s' pulled successfully.", imageName)
 	
-	// If image is from GHCR, replace it with a local tag without the registry prefix
-	if len(imageName) > 19 && imageName[:19] == "ghcr.io/distcodep7/" {
-		localTag := imageName[19:] // Remove "ghcr.io/distcodep7/" prefix
-		
-		// Tag with short name
-		if err := cli.ImageTag(ctx, imageName, localTag); err != nil {
-			log.Printf("Warning: Failed to create local tag '%s': %v", localTag, err)
-			return imageName, nil // Return original name if tagging fails
-		} else {
-			log.Printf("Created local tag '%s'", localTag)
-		}
-		
-		// Remove the GHCR tag to keep only the short version
-		if _, err := cli.ImageRemove(ctx, imageName, image.RemoveOptions{Force: false, PruneChildren: false}); err != nil {
-			log.Printf("Warning: Failed to remove GHCR tag '%s': %v", imageName, err)
-		} else {
-			log.Printf("Removed GHCR tag, kept local tag '%s'", localTag)
-		}
-		
-		return localTag, nil
-	}
-	
 	return imageName, nil
 }
 

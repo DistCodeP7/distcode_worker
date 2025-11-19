@@ -18,7 +18,7 @@
 
 3. Test the message queue using Python:
 
-   ### Linux
+### Linux
 
    ```bash
    cd python_testing
