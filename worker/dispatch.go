@@ -185,16 +185,14 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 		ea.startWorkerLogStreaming(jobCtx, worker, job.Code[i], cancel, job)
 	}
 
+	// Wait for all workers to complete
 	ea.wg.Wait()
-	if jobCtx.Err() != nil {
-		if errors.Is(jobCtx.Err(), context.Canceled) {
-			log.Printf("Job %d cancelled", job.ProblemId)
-		} else if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
-			d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
-		} else {
-			d.sendJobError(job, jobCtx.Err())
-		}
-	}
+	
+	// Stop periodic flush immediately
+	cancel()
+	
+	// Handle timeout if it occurred
+	d.handleJobCompletion(jobCtx, job)
 
 	if err = d.workerManager.ReleaseJob(job.ProblemId); err != nil {
 		d.sendJobError(job, err)
@@ -205,30 +203,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 
 	log.Printf("Finished job %v", job.ProblemId)
 
-	jobMetric := &types.JobMetricPayload{
-		SchedulingDelay: setupStartT.Sub(submissionT),
-		ExecutionTime:   setupEndT.Sub(setupStartT),
-		TotalTime:       setupEndT.Sub(submissionT),
-	}
-
-	jobMetricEvent := types.StreamingJobEvent{
-		JobUID:    job.JobUID,
-		ProblemId: job.ProblemId,
-		UserId:    job.UserId,
-		Events: []types.StreamingEvent{{
-			Kind:      "metric",
-			JobMetric: jobMetric,
-		}},
-	}
-
-	// Send job-level metric (non-blocking)
-	if d.metricsChannel != nil {
-		select {
-		case d.metricsChannel <- jobMetricEvent:
-		default:
-			log.Printf("Dropped job metric for job %v (channel full)", job.ProblemId)
-		}
-	}
+	d.compileAndSendMetrics(job, submissionT, setupStartT, setupEndT)
 }
 
 func (d *JobDispatcher) startDSNetController(ctx context.Context, networkName string, job types.JobRequest) (string, error) {
@@ -285,6 +260,48 @@ func (d *JobDispatcher) cleanupController(ctx context.Context, controllerID stri
 	}
 	// Give Docker a moment to fully disconnect the container from the network
 	time.Sleep(100 * time.Millisecond)
+}
+
+func (d *JobDispatcher) compileAndSendMetrics(job types.JobRequest, submissionT, setupStartT, setupEndT time.Time) {
+	jobMetric := &types.JobMetricPayload{
+		SchedulingDelay: setupStartT.Sub(submissionT),
+		ExecutionTime:   setupEndT.Sub(setupStartT),
+		TotalTime:       setupEndT.Sub(submissionT),
+	}
+
+	jobMetricEvent := types.StreamingJobEvent{
+		JobUID:    job.JobUID,
+		ProblemId: job.ProblemId,
+		UserId:    job.UserId,
+		Events: []types.StreamingEvent{{
+			Kind:      "metric",
+			JobMetric: jobMetric,
+		}},
+	}
+
+	// Send job-level metric (non-blocking)
+	if d.metricsChannel != nil {
+		select {
+		case d.metricsChannel <- jobMetricEvent:
+		default:
+			log.Printf("Dropped job metric for job %v (channel full)", job.ProblemId)
+		}
+	}
+}
+
+// handleJobCompletion checks if the job timed out or was cancelled and logs/reports appropriately
+func (d *JobDispatcher) handleJobCompletion(jobCtx context.Context, job types.JobRequest) {
+	if err := jobCtx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("Job %d timed out after %ds", job.ProblemId, job.TimeoutLimit)
+			d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
+		} else if errors.Is(err, context.Canceled) {
+			log.Printf("Job %d cancelled", job.ProblemId)
+		} else {
+			log.Printf("Job %d failed with error: %v", job.ProblemId, err)
+			d.sendJobError(job, err)
+		}
+	}
 }
 
 // requestWorkerReservation tries to reserve the required number of workers for the job.

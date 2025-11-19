@@ -76,5 +76,13 @@ func handleDelivery[T any](d amqp.Delivery, out chan<- T) {
 	}
 
 	out <- msg
-	log.Printf("Received %T from MQ", msg)
+	
+	switch any(msg).(type) {
+	case types.JobRequest:
+		log.Printf("Received job from MQ")
+	case types.CancelJobRequest:
+		log.Printf("Received job cancellation from MQ")
+	default:
+		log.Printf("Received %T from MQ", msg)
+	}
 }

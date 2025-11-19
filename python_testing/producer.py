@@ -160,9 +160,97 @@ func main() {
 """
 ]
 
+# Test case: Worker gets stuck (sleeps longer than timeout)
+stuck_worker = [
+    """package main
+
+import (
+    "fmt"
+    "time"
+)
+
+func main() {
+    fmt.Println("Worker starting...")
+    fmt.Println("Simulating stuck worker - sleeping for 60 seconds (timeout is 30s)")
+    
+    // This will exceed the 30 second timeout
+    time.Sleep(60 * time.Second)
+    
+    // This should never print
+    fmt.Println("Worker finished (this shouldn't appear)")
+}
+"""
+]
+
+# Test case: Multi-node communication via DSNet
+multi_node_dsnet = [
+    """package main
+
+import (
+    "fmt"
+    "time"
+
+    dsnet "github.com/distcodep7/dsnet/dsnet"
+)
+
+func main() {
+    fmt.Println("Node 0: Connecting to network...")
+    
+    node0, err := dsnet.Connect("node-0")
+    if err != nil {
+        fmt.Printf("Node 0: Failed to connect: %v\\n", err)
+        return
+    }
+    defer node0.Close()
+    
+    fmt.Println("Node 0: Connected!")
+    
+    fmt.Println("Node 1: Connecting to network...")
+    
+    node1, err := dsnet.Connect("node-1")
+    if err != nil {
+        fmt.Printf("Node 1: Failed to connect: %v\\n", err)
+        return
+    }
+    defer node1.Close()
+    
+    fmt.Println("Node 1: Connected!")
+    
+    // Node 1 sends a message to Node 0
+    go func() {
+        time.Sleep(500 * time.Millisecond) // Give node 0 time to start receiving
+        message := "Hello from Node 1!"
+        fmt.Println("Node 1: Sending message to node-0...")
+        
+        if err := node1.Send("node-0", message); err != nil {
+            fmt.Printf("Node 1: Error sending: %v\\n", err)
+            return
+        }
+        
+        fmt.Println("Node 1: Message sent successfully!")
+    }()
+    
+    // Node 0 receives the message
+    fmt.Println("Node 0: Waiting for message...")
+    envelope, ok := node0.Recv()
+    if !ok {
+        fmt.Println("Node 0: Channel closed")
+        return
+    }
+    
+    fmt.Printf("Node 0: Received message from %s: %s\\n", envelope.From, envelope.Payload)
+    
+    time.Sleep(1 * time.Second) // Give goroutine time to finish
+    fmt.Println("Communication test completed successfully!")
+}
+"""
+]
+
 go_snippets = [
    #networked_example,
-   dsnet,
+   #dsnet,
+   #stuck_worker,  # Test the timeout with a stuck worker
+   multi_node_dsnet,  # Test multi-node DSNet communication
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println("Hello, world!") }', 'package main\nimport "fmt"\nfunc main() { fmt.Println("World, world!") }'],
    #[ 'package main\nimport ("fmt"; "time")\nfunc main() { for i := 1; i <= 5; i++ { fmt.Println("Count:", i); time.Sleep(1 * time.Second) } }', 'package main\nimport "fmt"\nfunc main() { for i := 1; i <= 3; i++ { fmt.Println("Number:", i) } }'],
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println(2 + 2) }'],
