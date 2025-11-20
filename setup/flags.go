@@ -6,13 +6,22 @@ import "flag"
 // It returns the Docker image name, the number of worker goroutines, and the jobs channel capacity as specified by the flags.
 // Flags:
 //
-//	-i string: The Docker image to use for workers (default "golang:1.25").
+//	-iWorker string: The Docker image to use for workers (default "golang:1.25").
+//	-iController string: The Docker image to use for the DSNet controller.
 //	-w int: The number of worker goroutines to start (default 4).
 //	-c int: The capacity of the jobs channel (default 2 * workers).
-func ParseFlags() (string, int, int) {
-	workerImageName := flag.String("i", "golang:1.25", "The Docker image to use for workers")
+func ParseFlags() (string, string, int, int) {
+	workerImageName := flag.String("iw", "ghcr.io/distcodep7/dsnet:latest", "The Docker image to use for workers")
+	controllerImageName := flag.String("ic", "ghcr.io/distcodep7/dsnet-controller:latest", "The Docker image to use for the DSNet controller")
 	numWorkers := flag.Int("w", 4, "The number of worker goroutines to start")
 	jobsCapacityFlag := flag.Int("c", -1, "The capacity of the jobs channel (optional)")
+
+	if *workerImageName == "" {
+		panic("DSNet worker image not found")
+	}
+	if *controllerImageName == "" {
+		panic("DSNet controller image not found")
+	}
 
 	flag.Parse()
 	jobsCapacity := *jobsCapacityFlag
@@ -20,5 +29,5 @@ func ParseFlags() (string, int, int) {
 		jobsCapacity = 2 * *numWorkers
 	}
 
-	return *workerImageName, *numWorkers, jobsCapacity
+	return *workerImageName, *controllerImageName, *numWorkers, jobsCapacity
 }

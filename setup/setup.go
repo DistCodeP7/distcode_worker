@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"syscall"
 	"time"
 
@@ -20,9 +19,11 @@ import (
 )
 
 type AppResources struct {
-	Ctx       context.Context
-	Cancel    context.CancelFunc
-	DockerCli *client.Client
+	Ctx                 context.Context
+	Cancel              context.CancelFunc
+	DockerCli           *client.Client
+	WorkerImage         string
+	ControllerImage     string
 }
 
 // SetupApp initializes application resources required for running a worker.
@@ -31,7 +32,7 @@ type AppResources struct {
 // It also pre-warms the cache by running a dummy container.
 // Returns an AppResources struct containing the context, cancel function, and Docker client.
 // If any step fails, it cleans up resources and returns an error.
-func SetupApp(workerImageName string) (*AppResources, error) {
+func SetupApp(workerImageName string, controllerImageName string) (*AppResources, error) {
 	// Setup context with cancellation on interrupt signals
 	ctx, cancel := context.WithCancel(context.Background())
 	handleSignals(cancel)
@@ -45,15 +46,24 @@ func SetupApp(workerImageName string) (*AppResources, error) {
 	log.Println("Docker client initialized.")
 
 	// Pre-pull the worker image
-	if err := prePullImage(ctx, cli, workerImageName); err != nil {
+	effectiveWorkerImage, err := prePullImage(ctx, cli, workerImageName)
+	if err != nil {
 		cli.Close()
 		cancel()
 		return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
 	}
-	log.Printf("Image '%s' is ready.", workerImageName)
+	log.Printf("Image '%s' is ready.", effectiveWorkerImage)
+
+	effectiveControllerImage, err := prePullImage(ctx, cli, controllerImageName)
+	if err != nil {
+		cli.Close()
+		cancel()
+		return nil, fmt.Errorf("failed to pre-pull image %s: %w", controllerImageName, err)
+	}
+	log.Printf("Image '%s' is ready.", effectiveControllerImage)
 
 	// Pre-warm the cache by running a dummy container
-	if err := prewarmCache(ctx, cli, workerImageName); err != nil {
+	if err := prewarmCache(ctx, cli, effectiveWorkerImage); err != nil {
 		cli.Close()
 		cancel()
 		return nil, fmt.Errorf("failed to pre-warm cache: %w", err)
@@ -61,9 +71,11 @@ func SetupApp(workerImageName string) (*AppResources, error) {
 	log.Println("Cache pre-warming completed.")
 
 	return &AppResources{
-		Ctx:       ctx,
-		Cancel:    cancel,
-		DockerCli: cli,
+		Ctx:             ctx,
+		Cancel:          cancel,
+		DockerCli:       cli,
+		WorkerImage:     effectiveWorkerImage,
+		ControllerImage: effectiveControllerImage,
 	}, nil
 }
 
@@ -153,24 +165,12 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 	return nil
 }
 
-func prePullImage(ctx context.Context, cli *client.Client, imageName string) error {
+func prePullImage(ctx context.Context, cli *client.Client, imageName string) (string, error) {
 	log.Printf("Pulling Docker image '%s'...", imageName)
-
-	// Check if the image already exists locally
-	images, err := cli.ImageList(ctx, image.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, img := range images {
-		if slices.Contains(img.RepoTags, imageName) {
-			log.Printf("Image '%s' already exists locally. Skipping pull.", imageName)
-			return nil
-		}
-	}
 
 	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer reader.Close()
 
@@ -180,7 +180,8 @@ func prePullImage(ctx context.Context, cli *client.Client, imageName string) err
 		log.Printf("Warning: Error reading image pull output: %v", err)
 	}
 	log.Printf("Image '%s' pulled successfully.", imageName)
-	return nil
+	
+	return imageName, nil
 }
 
 // handleSignals sets up a signal handler to listen for SIGINT and SIGTERM signals.

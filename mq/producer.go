@@ -55,12 +55,7 @@ func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-c
 						log.Printf("Publish error: %v", err)
 						return err // triggers reconnect
 					}
-					switch eventType {
-					case EventTypeResults:
-						log.Printf("Published result for job %d", event.ProblemId)
-					case EventTypeMetrics:
-						log.Printf("Published metric for job %d", event.ProblemId)
-					}
+					log.Printf("Published %s for job %d", eventType, event.ProblemId)
 				case <-ctx.Done():
 					return nil
 				}

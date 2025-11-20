@@ -12,10 +12,10 @@ import (
 
 func main() {
 	// Parse command line flags
-	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
+	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 
 	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
-	appResources, err := setup.SetupApp(workerImageName)
+	appResources, err := setup.SetupApp(workerImageName, controllerImageName)
 	if err != nil {
 		log.Fatalf("Fatal error in setup: %v", err)
 	}
@@ -46,7 +46,7 @@ func main() {
 
 	workers := make([]worker.WorkerInterface, numWorkers)
 	for i := range numWorkers {
-		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, workerImageName)
+		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, appResources.WorkerImage)
 		if err != nil {
 			log.Fatalf("Failed to create worker: %v", err)
 		}
@@ -60,13 +60,14 @@ func main() {
 	}
 
 	dispatcher := worker.NewJobDispatcher(worker.JobDispatcherConfig{
-		JobChannel:     jobsCh,
-		CancelJobChan:  cancelJobCh,
-		ResultsChannel: resultsCh,
-		MetricsChannel: metricsCh,
-		WorkerManager:  wm,
-		NetworkManager: worker.NewDockerNetworkManager(appResources.DockerCli),
-		Clock:          clockwork.NewRealClock(),
+		JobChannel:     		jobsCh,
+		CancelJobChan:  		cancelJobCh,
+		ResultsChannel: 		resultsCh,
+		MetricsChannel: 		metricsCh,
+		WorkerManager:  		wm,
+		NetworkManager: 		worker.NewDockerNetworkManager(appResources.DockerCli),
+		ControllerImageName: 	appResources.ControllerImage,
+		Clock:          		clockwork.NewRealClock(),
 	})
 
 	go dispatcher.Run(appResources.Ctx)
