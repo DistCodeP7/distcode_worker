@@ -45,25 +45,25 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 	}
 	log.Println("Docker client initialized.")
 
-	// Pre-pull the worker image
-	effectiveWorkerImage, err := prePullImage(ctx, cli, workerImageName)
+	// Pre-pull the container images
+	err = prePullImage(ctx, cli, workerImageName)
 	if err != nil {
 		cli.Close()
 		cancel()
 		return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
 	}
-	log.Printf("Image '%s' is ready.", effectiveWorkerImage)
+	log.Printf("Image '%s' is ready.", workerImageName)
 
-	effectiveControllerImage, err := prePullImage(ctx, cli, controllerImageName)
+	err = prePullImage(ctx, cli, controllerImageName)
 	if err != nil {
 		cli.Close()
 		cancel()
 		return nil, fmt.Errorf("failed to pre-pull image %s: %w", controllerImageName, err)
 	}
-	log.Printf("Image '%s' is ready.", effectiveControllerImage)
+	log.Printf("Image '%s' is ready.", controllerImageName)
 
 	// Pre-warm the cache by running a dummy container
-	if err := prewarmCache(ctx, cli, effectiveWorkerImage); err != nil {
+	if err := prewarmCache(ctx, cli, workerImageName); err != nil {
 		cli.Close()
 		cancel()
 		return nil, fmt.Errorf("failed to pre-warm cache: %w", err)
@@ -74,8 +74,8 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 		Ctx:             ctx,
 		Cancel:          cancel,
 		DockerCli:       cli,
-		WorkerImage:     effectiveWorkerImage,
-		ControllerImage: effectiveControllerImage,
+		WorkerImage:     workerImageName,
+		ControllerImage: controllerImageName,
 	}, nil
 }
 
@@ -165,12 +165,12 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 	return nil
 }
 
-func prePullImage(ctx context.Context, cli *client.Client, imageName string) (string, error) {
+func prePullImage(ctx context.Context, cli *client.Client, imageName string) (error) {
 	log.Printf("Pulling Docker image '%s'...", imageName)
 
 	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer reader.Close()
 
@@ -181,7 +181,7 @@ func prePullImage(ctx context.Context, cli *client.Client, imageName string) (st
 	}
 	log.Printf("Image '%s' pulled successfully.", imageName)
 	
-	return imageName, nil
+	return nil
 }
 
 // handleSignals sets up a signal handler to listen for SIGINT and SIGTERM signals.
