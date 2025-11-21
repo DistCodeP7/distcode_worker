@@ -1,78 +1,80 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
-	"github.com/DistCodeP7/distcode_worker/utils"
-	"github.com/docker/docker/api/types/container"
 	"github.com/jonboulle/clockwork"
 )
 
-type JobDispatcherConfig struct {
-	CancelJobChan       <-chan types.CancelJobRequest  // receive-only
-	JobChannel          <-chan types.JobRequest        // receive-only
-	ResultsChannel      chan<- types.StreamingJobEvent // send-only
-	MetricsChannel      chan<- types.StreamingJobEvent // send-only
-	WorkerManager       WorkerManagerInterface         // assumes non-nil
-	NetworkManager      NetworkManagerInterface        // assumes non-nil
-	ControllerImageName string                         // assumes non-nil
-	Clock               clockwork.Clock                // Optional, for testing purposes
-	FlushInterval       time.Duration                  // Optional, for testing purposes
-}
+const (
+	EventLog    = "log"
+	EventStatus = "status"
+)
 
-type JobDispatcher struct {
-	cancelJobChan       <-chan types.CancelJobRequest
-	jobChannel          <-chan types.JobRequest
-	resultsChannel      chan<- types.StreamingJobEvent
-	metricsChannel      chan<- types.StreamingJobEvent
-	workerManager       WorkerManagerInterface
-	networkManager      NetworkManagerInterface
-	ControllerImageName string
-	Clock               clockwork.Clock
-	FlushInterval       time.Duration
-	mu                  sync.Mutex
-	activeJobs          map[string]context.CancelFunc
-}
-
+// WorkerManagerInterface manages worker reservation and lifecycle
 type WorkerManagerInterface interface {
-	ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error)
+	ReserveWorkers(jobId int, specs []types.NodeSpec) ([]WorkerInterface, error)
 	ReleaseJob(jobId int) error
 	Shutdown() error
 }
 
+// NetworkManagerInterface creates and connects workers to a network
 type NetworkManagerInterface interface {
 	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkName string, err error)
 }
 
-func NewJobDispatcher(config JobDispatcherConfig) *JobDispatcher {
-	if config.Clock == nil {
-		config.Clock = clockwork.NewRealClock()
-	}
-	if config.FlushInterval == 0 {
-		config.FlushInterval = 200 * time.Millisecond
-	}
-	return &JobDispatcher{
-		cancelJobChan:       config.CancelJobChan,
-		jobChannel:          config.JobChannel,
-		resultsChannel:      config.ResultsChannel,
-		metricsChannel:      config.MetricsChannel,
-		workerManager:       config.WorkerManager,
-		networkManager:      config.NetworkManager,
-		ControllerImageName: config.ControllerImageName,
-		Clock:               config.Clock,
-		FlushInterval:       config.FlushInterval,
-		activeJobs:          make(map[string]context.CancelFunc),
-	}
+// JobCancellation holds per-job cancel func and a flag for user cancellation
+type JobCancellation struct {
+	Cancel         context.CancelFunc
+	CanceledByUser atomic.Bool
 }
 
-// Run starts the job dispatcher loop. It listens for incoming job requests
-// and processes each job in a separate goroutine.
+// JobDispatcher orchestrates job execution across workers
+type JobDispatcher struct {
+	cancelJobChan  <-chan types.CancelJobRequest
+	jobChannel     <-chan types.JobRequest
+	resultsChannel chan<- types.StreamingJobEvent
+	workerManager  WorkerManagerInterface
+	networkManager NetworkManagerInterface
+	clock          clockwork.Clock
+
+	mu         sync.Mutex
+	activeJobs map[string]*JobCancellation
+}
+
+func NewJobDispatcher(
+	cancelJobChan <-chan types.CancelJobRequest,
+	jobChannel <-chan types.JobRequest,
+	resultsChannel chan<- types.StreamingJobEvent,
+	workerManager WorkerManagerInterface,
+	networkManager NetworkManagerInterface,
+	opts ...func(*JobDispatcher),
+) *JobDispatcher {
+	d := &JobDispatcher{
+		cancelJobChan:  cancelJobChan,
+		jobChannel:     jobChannel,
+		resultsChannel: resultsChannel,
+		workerManager:  workerManager,
+		networkManager: networkManager,
+		clock:          clockwork.NewRealClock(),
+		activeJobs:     make(map[string]*JobCancellation),
+	}
+
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// Run starts the dispatcher loop
 func (d *JobDispatcher) Run(ctx context.Context) {
 	for {
 		select {
@@ -86,9 +88,10 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 	}
 }
 
+// Cancel a running job: mark as user-cancelled then call cancel func
 func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 	d.mu.Lock()
-	cancel, ok := d.activeJobs[req.JobUID.String()]
+	jc, ok := d.activeJobs[req.JobUID.String()]
 	d.mu.Unlock()
 
 	if !ok {
@@ -96,424 +99,219 @@ func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 		return
 	}
 
-	cancel()
+	jc.CanceledByUser.Store(true)
+	if jc.Cancel != nil {
+		jc.Cancel()
+	}
 }
 
-// Utility function to send an error result for a job.
-func (d *JobDispatcher) sendJobError(job types.JobRequest, err error) {
+// sendJobResult sends final job result as two deterministic events: log + status
+func (d *JobDispatcher) sendJobResult(job types.JobRequest, aggregatedLogs string, status types.JobStatus, statusMsg string) {
+	//TDOO THIS IS SHIT BUT WE NEED TO FIGURE OUT WHAT WE WANT TO DO
+	events := []types.StreamingEvent{
+		{
+			Kind:     EventLog,
+			WorkerId: "",
+			Message:  aggregatedLogs,
+		},
+		{
+			Kind:     EventStatus,
+			WorkerId: "",
+			Status:   status,
+			Message:  statusMsg,
+		},
+	}
+
 	d.resultsChannel <- types.StreamingJobEvent{
 		JobUID:        job.JobUID,
 		ProblemId:     job.ProblemId,
 		UserId:        job.UserId,
-		SequenceIndex: -1, // signals end of stream
-		Events: []types.StreamingEvent{{
-			Kind:     "error",
-			WorkerId: nil,
-			Message:  utils.PtrString(err.Error()),
-		}},
+		SequenceIndex: -1,
+		Events:        events,
 	}
 }
 
-// processJob processes a single job request. It reserves the required number of workers,
-// sets up a Docker network, streams logs from each worker, and sends aggregated events to the results channel.
+// High-level job processing
 func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	log.Printf("Starting job %v", job.ProblemId)
-	submissionT := time.Now()
 
-	requiredWorkers := len(job.Code)
-	workers, err := d.requestWorkerReservation(ctx, job.ProblemId, requiredWorkers)
+	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
-		d.sendJobError(job, err)
+		d.sendJobResult(job, "", types.StatusJobFailed, err.Error())
 		return
 	}
 
-	setupStartT := time.Now()
+	jobCtx, jc := d.createJobContext(ctx, job)
+	defer d.cleanupJob(job.JobUID.String())
 
-	// Per-job context with timeout
-	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutLimit)*time.Second)
-	d.mu.Lock()
-	d.activeJobs[job.JobUID.String()] = cancel
-	d.mu.Unlock()
-	defer func() {
-		cancel()
-		d.mu.Lock()
-		delete(d.activeJobs, job.JobUID.String())
-		d.mu.Unlock()
-	}()
+	logs, jobErr := d.runWorkers(jobCtx, job, workers)
+	d.handleJobCompletion(jobCtx, job, jc, logs, jobErr)
 
-	// Create network and connect workers
-	cleanupNetwork, networkName, err := d.networkManager.CreateAndConnect(jobCtx, workers)
-	if err != nil {
-		log.Printf("Failed to setup network for job %d: %v", job.ProblemId, err)
-		_ = d.workerManager.ReleaseJob(job.ProblemId)
-		d.sendJobError(job, err)
-		return
+	if err := d.workerManager.ReleaseJob(job.ProblemId); err != nil {
+		log.Printf("Error releasing job %d workers: %v", job.ProblemId, err)
 	}
-
-	// Start DSNet controller in the created network (only if configured)
-	var controllerID string
-	if d.ControllerImageName != "" {
-		controllerID, err = d.startDSNetController(jobCtx, networkName, job)
-		if err != nil {
-			log.Printf("Failed to start DSNet controller for job %d: %v", job.ProblemId, err)
-			_ = d.workerManager.ReleaseJob(job.ProblemId)
-			d.sendJobError(job, err)
-			cleanupNetwork()
-			return
-		}
-	}
-
-	// Defer in reverse order: network cleanup first (defers are LIFO)
-	// This way controller cleanup runs before network cleanup
-	defer cleanupNetwork()
-	if controllerID != "" {
-		defer d.cleanupController(context.Background(), controllerID)
-	}
-
-	// Allow some time for network and controller setup
-	time.Sleep(500 * time.Millisecond)
-
-	setupEndT := time.Now()
-	log.Printf("Setup for job %v took %v", job.ProblemId, setupEndT.Sub(setupStartT))
-
-	ea := EventAggregator{
-		wg:             sync.WaitGroup{},
-		muEvents:       sync.Mutex{},
-		resultsChannel: d.resultsChannel,
-		metricsChannel: d.metricsChannel,
-		eventBuf:       make([]types.StreamingEvent, 0),
-		clock:          d.Clock,
-	}
-
-	cleanupTimedFlush, flushDone := ea.startPeriodicFlush(jobCtx, job, d.FlushInterval)
-	for i, worker := range workers {
-		ea.startWorkerLogStreaming(jobCtx, worker, job.Code[i], cancel, job)
-	}
-
-	// Wait for all workers to complete
-	ea.wg.Wait()
-	
-	// Stop periodic flush immediately
-	cancel()
-	
-	// Handle timeout if it occurred
-	d.handleJobCompletion(jobCtx, job)
-
-	if err = d.workerManager.ReleaseJob(job.ProblemId); err != nil {
-		d.sendJobError(job, err)
-	}
-
-	cleanupTimedFlush()
-	<-flushDone
 
 	log.Printf("Finished job %v", job.ProblemId)
-
-	d.compileAndSendMetrics(job, submissionT, setupStartT, setupEndT)
 }
 
-func (d *JobDispatcher) startDSNetController(ctx context.Context, networkName string, job types.JobRequest) (string, error) {
-	containerName := fmt.Sprintf("dsnet-controller-%s", job.JobUID.String())
-
-	dockerNetworkMgr, ok := d.networkManager.(*DockerNetworkManager)
-	if !ok {
-		return "", fmt.Errorf("network manager is not a DockerNetworkManager")
-	}
-	cli := dockerNetworkMgr.GetDockerClient()
-
-	// Create and start controller container with network specified
-	resp, err := cli.ContainerCreate(ctx,
-		&container.Config{
-			Image:    d.ControllerImageName,
-			Hostname: "dsnet-controller",
-			Cmd:      []string{"/app/controller"},
-		},
-		&container.HostConfig{
-			NetworkMode: container.NetworkMode(networkName),
-		},
-		nil,
-		nil,
-		containerName,
-	)
-
-	if err != nil {
-		return "", fmt.Errorf("failed to create DSNet controller container: %w", err)
-	}
-
-	log.Printf("Controller container created: %s, starting...", resp.ID[:12])
-
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
-		return "", fmt.Errorf("failed to start DSNet controller container: %w", err)
-	}
-
-	log.Printf("Started DSNet controller %s in network %s", resp.ID[:12], networkName)
-	return resp.ID, nil
-}
-
-func (d *JobDispatcher) cleanupController(ctx context.Context, controllerID string) {
-	dockerNetworkMgr, ok := d.networkManager.(*DockerNetworkManager)
-	if !ok {
-		log.Printf("network manager is not a DockerNetworkManager, cannot cleanup controller %s", controllerID)
-		return
-	}
-	cli := dockerNetworkMgr.dockerCli
-
-	if err := cli.ContainerRemove(ctx, controllerID, container.RemoveOptions{Force: true}); err != nil {
-		log.Printf("Failed to remove DSNet controller %s: %v", controllerID, err)
-	} else {
-		log.Printf("Cleaned up DSNet controller %s", controllerID[:12])
-	}
-	// Give Docker a moment to fully disconnect the container from the network
-	time.Sleep(100 * time.Millisecond)
-}
-
-func (d *JobDispatcher) compileAndSendMetrics(job types.JobRequest, submissionT, setupStartT, setupEndT time.Time) {
-	jobMetric := &types.JobMetricPayload{
-		SchedulingDelay: setupStartT.Sub(submissionT),
-		ExecutionTime:   setupEndT.Sub(setupStartT),
-		TotalTime:       setupEndT.Sub(submissionT),
-	}
-
-	jobMetricEvent := types.StreamingJobEvent{
-		JobUID:    job.JobUID,
-		ProblemId: job.ProblemId,
-		UserId:    job.UserId,
-		Events: []types.StreamingEvent{{
-			Kind:      "metric",
-			JobMetric: jobMetric,
-		}},
-	}
-
-	// Send job-level metric (non-blocking)
-	if d.metricsChannel != nil {
-		select {
-		case d.metricsChannel <- jobMetricEvent:
-		default:
-			log.Printf("Dropped job metric for job %v (channel full)", job.ProblemId)
-		}
-	}
-}
-
-// handleJobCompletion checks if the job timed out or was cancelled and logs/reports appropriately
-func (d *JobDispatcher) handleJobCompletion(jobCtx context.Context, job types.JobRequest) {
-	if err := jobCtx.Err(); err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Job %d timed out after %ds", job.ProblemId, job.TimeoutLimit)
-			d.sendJobError(job, fmt.Errorf("job timed out after %ds", job.TimeoutLimit))
-		} else if errors.Is(err, context.Canceled) {
-			log.Printf("Job %d cancelled", job.ProblemId)
-		} else {
-			log.Printf("Job %d failed with error: %v", job.ProblemId, err)
-			d.sendJobError(job, err)
-		}
-	}
-}
-
-// requestWorkerReservation tries to reserve the required number of workers for the job.
-// If not enough workers are available, it waits/blocks until they are or the context is cancelled.
-func (d *JobDispatcher) requestWorkerReservation(ctx context.Context, jobID, count int) ([]WorkerInterface, error) {
+// Reserve workers with retry
+func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.JobRequest) ([]WorkerInterface, error) {
 	for {
-		workers, err := d.workerManager.ReserveWorkers(jobID, count)
+		workers, err := d.workerManager.ReserveWorkers(job.ProblemId, job.Nodes)
 		if err == nil {
 			return workers, nil
 		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-d.Clock.After(200 * time.Millisecond):
-			// Retry after a short delay
+		case <-d.clock.After(200 * time.Millisecond):
+			// Retry after delay
 		}
 	}
 }
 
-// EventAggregator collects events from one or more workers and sends them to the results channel.
-type EventAggregator struct {
-	wg             sync.WaitGroup
-	muEvents       sync.Mutex
-	resultsChannel chan<- types.StreamingJobEvent
-	metricsChannel chan<- types.StreamingJobEvent // Used for direct metric sends
-	eventBuf       []types.StreamingEvent
-	clock          clockwork.Clock
+// Create a per-job context with timeout and register JobControl
+func (d *JobDispatcher) createJobContext(ctx context.Context, job types.JobRequest) (context.Context, *JobCancellation) {
+	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.Timeout)*time.Second)
+	jc := &JobCancellation{Cancel: cancel}
+
+	d.mu.Lock()
+	d.activeJobs[job.JobUID.String()] = jc
+	d.mu.Unlock()
+
+	return jobCtx, jc
 }
 
-// startWorkerLogStreaming streams logs from a worker and appends them to the event buffer.
-// It also records execution duration and sends a metric event to the metrics channel if configured.
-func (e *EventAggregator) startWorkerLogStreaming(ctx context.Context, worker WorkerInterface, code string, cancelJob context.CancelFunc, job types.JobRequest) {
-	stdoutCh := make(chan string, 10)
-	stderrCh := make(chan string, 10)
-
-	// Stream stdout
-	go func(id string) {
-		for line := range stdoutCh {
-			e.muEvents.Lock()
-			e.eventBuf = append(e.eventBuf, types.StreamingEvent{
-				Kind:     "stdout",
-				WorkerId: utils.PtrString(id),
-				Message:  utils.PtrString(line),
-			})
-			e.muEvents.Unlock()
+// Cleanup job entry from activeJobs and cancel context if still present
+func (d *JobDispatcher) cleanupJob(jobUID string) {
+	d.mu.Lock()
+	jc, ok := d.activeJobs[jobUID]
+	if ok {
+		// ensure cancel called and remove entry
+		if jc.Cancel != nil {
+			jc.Cancel()
 		}
-	}(worker.ID())
-
-	// Stream stderr
-	go func(id string) {
-		for line := range stderrCh {
-			e.muEvents.Lock()
-			e.eventBuf = append(e.eventBuf, types.StreamingEvent{
-				Kind:     "stderr",
-				WorkerId: utils.PtrString(id),
-				Message:  utils.PtrString(line),
-			})
-			e.muEvents.Unlock()
-		}
-	}(worker.ID())
-
-	e.wg.Add(1)
-	// Run the code in the worker and record metrics
-	go func(w WorkerInterface, code string, id string) {
-		defer e.wg.Done()
-		startT := time.Now()
-		if err := w.ExecuteCode(ctx, code, stdoutCh, stderrCh); err != nil {
-			if errors.Is(ctx.Err(), context.Canceled) {
-				log.Printf("Worker %s execution cancelled", id)
-			} else {
-				log.Printf("Worker %s execution error: %v", id, err)
-				e.muEvents.Lock()
-				e.eventBuf = append(e.eventBuf, types.StreamingEvent{
-					Kind:     "error",
-					WorkerId: utils.PtrString(id),
-					Message:  utils.PtrString(err.Error()),
-				})
-				e.muEvents.Unlock()
-				cancelJob()
-			}
-		}
-		endT := time.Now()
-
-		// Send metric directly through metrics channel if configured
-		if e.metricsChannel != nil {
-			metricEvent := types.StreamingJobEvent{
-				JobUID:    job.JobUID,
-				ProblemId: job.ProblemId,
-				UserId:    job.UserId,
-				Events: []types.StreamingEvent{{
-					Kind:     "metric",
-					WorkerId: utils.PtrString(id),
-					WorkerMetric: &types.WorkerMetricPayload{
-						StartTime: startT,
-						EndTime:   endT,
-						DeltaTime: endT.Sub(startT),
-					},
-				}},
-			}
-			// Non-blocking send - if channel is full, we drop the metric rather than
-			// risk impacting worker execution or results delivery
-			select {
-			case e.metricsChannel <- metricEvent:
-			default:
-				log.Printf("Dropped metric for worker %s (channel full)", id)
-			}
-		}
-
-		close(stdoutCh)
-		close(stderrCh)
-	}(worker, code, worker.ID())
+		delete(d.activeJobs, jobUID)
+	}
+	d.mu.Unlock()
 }
 
-func (e *EventAggregator) startPeriodicFlush(ctx context.Context, job types.JobRequest, tickerInterval time.Duration) (cleanup func(), done <-chan struct{}) {
-	ticker := e.clock.NewTicker(tickerInterval)
-	sequence := 0
-	doneCh := make(chan struct{})
+// Run all workers for a job and collect logs
+func (d *JobDispatcher) runWorkers(ctx context.Context, job types.JobRequest, workers []WorkerInterface) (string, error) {
+	var wg sync.WaitGroup
+	var logs bytes.Buffer
+	var jobErr error
+	var mu sync.Mutex
 
-	var once sync.Once
-
-	go func() {
-		defer close(doneCh)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.Chan():
-				e.muEvents.Lock()
-				if len(e.eventBuf) > 0 {
-					eventsCopy := append([]types.StreamingEvent(nil), e.eventBuf...)
-					e.eventBuf = nil
-					e.resultsChannel <- types.StreamingJobEvent{
-						JobUID:        job.JobUID,
-						ProblemId:     job.ProblemId,
-						UserId:        job.UserId,
-						SequenceIndex: sequence,
-						Events:        eventsCopy,
-					}
-					sequence++
-				}
-				e.muEvents.Unlock()
-			}
+	// Setup network
+	cleanup, _, netErr := d.networkManager.CreateAndConnect(ctx, workers)
+	if netErr != nil {
+		return "", fmt.Errorf("failed to set up network: %w", netErr)
+	}
+	defer func() {
+		if cleanup != nil {
+			cleanup()
 		}
 	}()
 
-	cleanupFunc := func() {
-		once.Do(func() {
-			ticker.Stop()
-			e.flushRemainingEvents(job)
-		})
+	// small delay to allow network to settle
+	time.Sleep(500 * time.Millisecond)
+
+	for i, worker := range workers {
+		wg.Add(1)
+		go func(worker WorkerInterface, spec types.NodeSpec) {
+			defer wg.Done()
+
+			wLogs, err := d.runWorkerJob(ctx, worker, spec)
+
+			mu.Lock()
+			logs.WriteString(fmt.Sprintf("--- Worker %s ---\n%s", worker.ID()[:12], wLogs))
+			if err != nil {
+				jobErr = err
+				// cancel job context to stop other workers
+				d.mu.Lock()
+				jc, ok := d.activeJobs[job.JobUID.String()]
+				d.mu.Unlock()
+				if ok && jc.Cancel != nil {
+					jc.Cancel()
+				}
+			}
+			mu.Unlock()
+		}(worker, job.Nodes[i])
 	}
 
-	return cleanupFunc, doneCh
+	wg.Wait()
+	return logs.String(), jobErr
 }
 
-// flushRemainingEvents sends any remaining events to both the results and metrics channels.
-// It also sends the special SequenceIndex of -1 to indicate the end of the job's events.
-func (e *EventAggregator) flushRemainingEvents(job types.JobRequest) {
-	e.muEvents.Lock()
-	defer e.muEvents.Unlock()
-	events := e.eventBuf
+type BuildError struct {
+	WorkerID string
+	Err      error
+}
 
-	// Ensure events is not nil
-	if events == nil {
-		events = []types.StreamingEvent{}
-	}
+func (e *BuildError) Error() string {
+	return fmt.Sprintf("build error on worker %s: %v", e.WorkerID[:12], e.Err)
+}
 
-	var resultEvents, metricEvents []types.StreamingEvent
-	var totalWorkerTime time.Duration
+// Run build + execute for a single worker
+func (d *JobDispatcher) runWorkerJob(ctx context.Context, worker WorkerInterface, spec types.NodeSpec) (string, error) {
+	var logBuffer bytes.Buffer
+	workerID := worker.ID()
 
-	for _, evt := range events {
-		switch evt.Kind {
-		case "result", "stdout", "stderr", "error":
-			resultEvents = append(resultEvents, evt)
-		case "metric":
-			metricEvents = append(metricEvents, evt)
-			if evt.WorkerMetric != nil {
-				totalWorkerTime += evt.WorkerMetric.DeltaTime
-			}
+	if spec.BuildCommand != "" {
+		log.Printf("Building code on worker %s: %s", workerID[:12], spec.BuildCommand)
+		logBuffer.WriteString(fmt.Sprintf("[Build] Running: %s", spec.BuildCommand))
+		if err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
+			Cmd:          spec.BuildCommand,
+			OutputWriter: &logBuffer,
+		}); err != nil {
+			logBuffer.WriteString(fmt.Sprintf("[Build ERROR] %v", err))
+			return logBuffer.String(), &BuildError{WorkerID: workerID, Err: err}
 		}
+		logBuffer.WriteString("[Build Success]")
 	}
 
-	// Send final non-metric events with SequenceIndex -1 to signal end
-	// Always send this message, even if empty, to signal job completion
-	e.resultsChannel <- types.StreamingJobEvent{
-		JobUID:        job.JobUID,
-		ProblemId:     job.ProblemId,
-		UserId:        job.UserId,
-		SequenceIndex: -1,
-		Events:        resultEvents,
+	log.Printf("Executing code on worker %s: %s", workerID[:12], spec.EntryCommand)
+	logBuffer.WriteString(fmt.Sprintf("[Execute] Running: %s	", spec.EntryCommand))
+	if err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          spec.EntryCommand,
+		OutputWriter: &logBuffer,
+	}); err != nil {
+		logBuffer.WriteString(fmt.Sprintf("[Execute ERROR] %v", err))
+		return logBuffer.String(), fmt.Errorf("execution failed on worker %s: %w", workerID[:12], err)
+	}
+	logBuffer.WriteString("[Execute Success]")
+
+	return logBuffer.String(), nil
+}
+
+// Handle job completion based on context or worker error
+func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRequest, jc *JobCancellation, aggregatedLogs string, workerError error) {
+	if jc != nil && jc.CanceledByUser.Load() {
+		log.Printf("Job %d canceled by user request", job.ProblemId)
+		d.sendJobResult(job, aggregatedLogs, types.StatusJobCanceled, "job canceled by user")
+		return
 	}
 
-	// Send final metric events
-	if e.metricsChannel != nil && len(metricEvents) > 0 {
-		jobMetric := &types.JobMetricPayload{
-			ExecutionTime: totalWorkerTime,
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		log.Printf("Job %d timed out after %ds", job.ProblemId, job.Timeout)
+		d.sendJobResult(job, aggregatedLogs, types.StatusJobTimeout, fmt.Sprintf("job timed out after %ds", job.Timeout))
+		return
+	}
+
+	if workerError != nil {
+		switch e := workerError.(type) {
+		case *BuildError:
+			log.Printf("Job %d failed due to build error: %v", job.ProblemId, e)
+			d.sendJobResult(job, aggregatedLogs, types.StatusJobCompilationError, fmt.Sprintf("build error on worker: %s", e.WorkerID[:12]))
+		default:
+			log.Printf("Job %d failed due to worker error: %v", job.ProblemId, e)
+			d.sendJobResult(job, aggregatedLogs, types.StatusJobFailed, workerError.Error())
 		}
-
-		e.metricsChannel <- types.StreamingJobEvent{
-			JobUID:        job.JobUID,
-			ProblemId:     job.ProblemId,
-			UserId:        job.UserId,
-			SequenceIndex: -1,
-			Events: append(metricEvents, types.StreamingEvent{
-				Kind:      "metric",
-				JobMetric: jobMetric,
-			}),
-		}
+		return
 	}
+
+	// Success
+	d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
 }
