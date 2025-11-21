@@ -228,7 +228,7 @@ func main() {
 
 go_snippets = [
    #networked_example,
-   dsnet,
+   #dsnet,
    #stuck_worker,  # Test the timeout with a stuck worker
    multi_node_dsnet,  # Test multi-node DSNet communication
    #[ 'package main\nimport "fmt"\nfunc main() { fmt.Println("Hello, world!") }', 'package main\nimport "fmt"\nfunc main() { fmt.Println("World, world!") }'],
@@ -261,7 +261,7 @@ for i, code in enumerate(go_snippets, start=1):
         "JobUID": str(uuid.uuid4()),
         "ProblemId": i,
         "Code": code,
-        "UserId": 1,
+        "UserId": "1",
         "TimeoutLimit": 30  # seconds
     }
     body = json.dumps(job)
