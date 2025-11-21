@@ -46,19 +46,23 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 	log.Println("Docker client initialized.")
 
 	// Pre-pull the container images
-	err = prePullImage(ctx, cli, workerImageName)
-	if err != nil {
-		cli.Close()
-		cancel()
-		return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
+	if workerImageName == "github.com/distcodep7/dsnet:latest" {
+		err = prePullImage(ctx, cli, workerImageName)
+		if err != nil {
+			cli.Close()
+			cancel()
+			return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
+		}	
 	}
 	log.Printf("Image '%s' is ready.", workerImageName)
 
-	err = prePullImage(ctx, cli, controllerImageName)
-	if err != nil {
-		cli.Close()
-		cancel()
-		return nil, fmt.Errorf("failed to pre-pull image %s: %w", controllerImageName, err)
+	if controllerImageName == "github.com/distcodep7/dsnet:latest" {
+		err = prePullImage(ctx, cli, controllerImageName)
+		if err != nil {
+			cli.Close()
+			cancel()
+			return nil, fmt.Errorf("failed to pre-pull image %s: %w", controllerImageName, err)
+		}
 	}
 	log.Printf("Image '%s' is ready.", controllerImageName)
 
