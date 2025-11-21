@@ -71,7 +71,7 @@ func handleDelivery[T any](d amqp.Delivery, out chan<- T) {
 
 	var msg T
 	if err := json.Unmarshal(d.Body, &msg); err != nil {
-		log.Printf("Invalid message: %s", d.Body)
+		log.Printf("Invalid message: %s, %s", d.Body, err)
 		return
 	}
 
