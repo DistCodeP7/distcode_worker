@@ -194,54 +194,34 @@ import (
 )
 
 func main() {
-    fmt.Println("Node 0: Connecting to network...")
-    
-    node0, err := dsnet.Connect("node-0")
+    node, err := dsnet.Connect(os.Getenv("NODE_NAME"))
     if err != nil {
-        fmt.Printf("Node 0: Failed to connect: %v\\n", err)
+        fmt.Printf("Failed to connect: %v", err)
         return
     }
-    defer node0.Close()
-    
-    fmt.Println("Node 0: Connected!")
-    
-    fmt.Println("Node 1: Connecting to network...")
-    
-    node1, err := dsnet.Connect("node-1")
-    if err != nil {
-        fmt.Printf("Node 1: Failed to connect: %v\\n", err)
-        return
-    }
-    defer node1.Close()
-    
-    fmt.Println("Node 1: Connected!")
-    
-    // Node 1 sends a message to Node 0
+    defer node.Close()
+
+    fmt.Printf("%s: Connected to network!\n", node.Name)
+
     go func() {
-        time.Sleep(500 * time.Millisecond) // Give node 0 time to start receiving
-        message := "Hello from Node 1!"
-        fmt.Println("Node 1: Sending message to node-0...")
-        
-        if err := node1.Send("node-0", message); err != nil {
-            fmt.Printf("Node 1: Error sending: %v\\n", err)
-            return
+        message := "Hello from " + node.Name
+        fmt.Printf("%s: Sending message to the other node...\n", node.Name)
+
+        if err := node.Broadcast(message); err != nil {
+            fmt.Printf("%s: Error sending: %v\n", node.Name, err)
         }
-        
-        fmt.Println("Node 1: Message sent successfully!")
+        fmt.Printf("%s: Message sent successfully!\n", node.Name)
     }()
-    
-    // Node 0 receives the message
-    fmt.Println("Node 0: Waiting for message...")
-    envelope, ok := node0.Recv()
+
+    envelope, ok := node.Recv()
     if !ok {
-        fmt.Println("Node 0: Channel closed")
+        fmt.Printf("%s: Channel closed\n", node.Name)
         return
     }
     
-    fmt.Printf("Node 0: Received message from %s: %s\\n", envelope.From, envelope.Payload)
+    fmt.Printf("%s: Received message from %s: %s\\n", node.Name, envelope.From, envelope.Payload)
     
     time.Sleep(1 * time.Second) // Give goroutine time to finish
-    fmt.Println("Communication test completed successfully!")
 }
 """
 ]
@@ -281,9 +261,8 @@ for i, code in enumerate(go_snippets, start=1):
         "JobUID": str(uuid.uuid4()),
         "ProblemId": i,
         "Code": code,
-        "UserId": 1,
+        "UserId": "1",
         "TimeoutLimit": 30  # seconds
-
     }
     body = json.dumps(job)
     channel.basic_publish(
