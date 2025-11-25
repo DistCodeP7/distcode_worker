@@ -290,6 +290,16 @@ func (d *JobDispatcher) runWorkerJob(ctx context.Context, worker WorkerInterface
 	}
 	logBuffer.WriteString("[Execute Success]")
 
+	tr, _ := worker.ReadTestResults(ctx, "/app/tmp/logfile.json")
+
+	if len(tr) == 0 {
+		log.Println("\n[Test Results] No test results found.")
+		return logBuffer.String(), nil
+	} else {
+		for i, result := range tr {
+			log.Println(fmt.Sprintf("\n[Test %d] Status: %t, Message: %s", i+1, result.Passed, result.Details))
+		}
+	}
 	return logBuffer.String(), nil
 }
 

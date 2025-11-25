@@ -38,6 +38,30 @@ job = {
                     fmt.Println("HELLO WORLD")
                 }
                 """,
+                "logfile.json": """
+                [
+                    {
+                        "Passed": true,
+                        "Name": "Login Test",
+                        "Details": "User was able to log in successfully."
+                    },
+                    {
+                        "Passed": false,
+                        "Name": "Payment Test",
+                        "Details": "Payment failed due to insufficient funds."
+                    },
+                    {
+                        "Passed": true,
+                        "Name": "Signup Test",
+                        "Details": "New user registered correctly."
+                    },
+                    {
+                        "Passed": false,
+                        "Name": "Profile Update Test",
+                        "Details": "Profile picture upload returned 500 error."
+                    }
+                ]
+                """
             },
             "Envs": [],
 			"BuildCommand": "go build -o solution ./main.go",
