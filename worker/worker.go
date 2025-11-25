@@ -1,3 +1,4 @@
+// Package worker wraps the Docker API with the aim of executing Golang applications using dsnet
 package worker
 
 import (
@@ -73,7 +74,6 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 
 	containerConfig := &container.Config{
 		Image:      workerImageName,
-		Cmd:        []string{"sleep", "infinity"},
 		Env:        envVars,
 		Tty:        false,
 		WorkingDir: "/app/tmp",
@@ -141,7 +141,6 @@ type ExecuteCommandOptions struct {
 
 // ExecuteCommand executes a command and streams all stdout/stderr directly into the provided io.Writer.
 func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) error {
-
 	execEnvStrings := make([]string, 0, len(e.Envs))
 	for _, env := range e.Envs {
 		execEnvStrings = append(execEnvStrings, fmt.Sprintf("%s=%s", env.Key, env.Value))

@@ -21,8 +21,8 @@ const (
 
 // WorkerManagerInterface manages worker reservation and lifecycle
 type WorkerManagerInterface interface {
-	ReserveWorkers(jobId int, specs []types.NodeSpec) ([]WorkerInterface, error)
-	ReleaseJob(jobId int) error
+	ReserveWorkers(jobID int, specs []types.NodeSpec) ([]WorkerInterface, error)
+	ReleaseJob(jobID int) error
 	Shutdown() error
 }
 
