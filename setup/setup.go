@@ -19,11 +19,11 @@ import (
 )
 
 type AppResources struct {
-	Ctx                 context.Context
-	Cancel              context.CancelFunc
-	DockerCli           *client.Client
-	WorkerImage         string
-	ControllerImage     string
+	Ctx             context.Context
+	Cancel          context.CancelFunc
+	DockerCli       *client.Client
+	WorkerImage     string
+	ControllerImage string
 }
 
 // SetupApp initializes application resources required for running a worker.
@@ -166,21 +166,34 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 }
 
 func prePullImage(ctx context.Context, cli *client.Client, imageName string) (string, error) {
-	log.Printf("Pulling Docker image '%s'...", imageName)
+	// Check if image exists locally
+	images, err := cli.ImageList(ctx, image.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to list local images: %w", err)
+	}
+	for _, img := range images {
+		for _, tag := range img.RepoTags {
+			if tag == imageName {
+				log.Printf("Image '%s' found locally, skipping pull.", imageName)
+				return imageName, nil
+			}
+		}
+	}
 
+	// Pull only if not found locally
+	log.Printf("Pulling Docker image '%s'...", imageName)
 	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
 		return "", err
 	}
 	defer reader.Close()
 
-	// Use io.Copy to block until the pull is complete and show progress.
 	_, err = io.Copy(os.Stdout, reader)
 	if err != nil && err != io.EOF {
 		log.Printf("Warning: Error reading image pull output: %v", err)
 	}
+
 	log.Printf("Image '%s' pulled successfully.", imageName)
-	
 	return imageName, nil
 }
 

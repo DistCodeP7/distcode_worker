@@ -7,7 +7,6 @@ import (
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
-	"github.com/jonboulle/clockwork"
 )
 
 func main() {
@@ -24,11 +23,9 @@ func main() {
 
 	jobsCh := make(chan types.JobRequest, jobsCapacity)
 	resultsCh := make(chan types.StreamingJobEvent, jobsCapacity)
-	metricsCh := make(chan types.StreamingJobEvent, jobsCapacity) // find a better value
 	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
 
 	defer close(resultsCh)
-	defer close(metricsCh)
 
 	// Start a goroutine to receive jobs from RabbitMQ
 	go func() {
@@ -44,42 +41,25 @@ func main() {
 		}
 	}()
 
-	workers := make([]worker.WorkerInterface, numWorkers)
-	for i := range numWorkers {
-		worker, err := worker.NewWorker(appResources.Ctx, appResources.DockerCli, appResources.WorkerImage)
-		if err != nil {
-			log.Fatalf("Failed to create worker: %v", err)
-		}
-		workers[i] = worker
-	}
-
-	wm, err := worker.NewWorkerManager(workers)
+	wm, err := worker.NewWorkerManager(numWorkers, worker.NewDockerWorkerProducer(appResources.DockerCli, workerImageName))
 
 	if err != nil {
 		log.Fatalf("Failed to create worker manager: %v", err)
 	}
 
-	dispatcher := worker.NewJobDispatcher(worker.JobDispatcherConfig{
-		JobChannel:     		jobsCh,
-		CancelJobChan:  		cancelJobCh,
-		ResultsChannel: 		resultsCh,
-		MetricsChannel: 		metricsCh,
-		WorkerManager:  		wm,
-		NetworkManager: 		worker.NewDockerNetworkManager(appResources.DockerCli),
-		ControllerImageName: 	appResources.ControllerImage,
-		Clock:          		clockwork.NewRealClock(),
-	})
+	dispatcher := worker.NewJobDispatcher(
+		cancelJobCh,
+		jobsCh,
+		resultsCh,
+		wm,
+		worker.NewDockerNetworkManager(appResources.DockerCli),
+	)
 
 	go dispatcher.Run(appResources.Ctx)
 	// Start separate publishers for results and metrics
 	go func() {
 		if err := mq.PublishStreamingEvents(appResources.Ctx, mq.EventTypeResults, resultsCh); err != nil {
 			log.Fatalf("MQ results publisher error: %v", err)
-		}
-	}()
-	go func() {
-		if err := mq.PublishStreamingEvents(appResources.Ctx, mq.EventTypeMetrics, metricsCh); err != nil {
-			log.Fatalf("MQ metrics publisher error: %v", err)
 		}
 	}()
 

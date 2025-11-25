@@ -1,47 +1,35 @@
 package types
 
 import (
-	"time"
-
 	"github.com/google/uuid"
 )
 
-type CancelJobRequest struct {
-	JobUID uuid.UUID
-}
+// JobStatus is a typed status for jobs, enforcing allowed values
+type JobStatus string
 
-type JobRequest struct {
-	JobUID       uuid.UUID
-	ProblemId    int
-	Code         []string
-	UserId       string
-	TimeoutLimit int // in seconds
-}
-
-type WorkerMetricPayload struct {
-	StartTime time.Time     `json:"start_time"`
-	EndTime   time.Time     `json:"end_time"`
-	DeltaTime time.Duration `json:"delta_time"`
-}
-
-type JobMetricPayload struct {
-	SchedulingDelay time.Duration `json:"scheduling_delay,omitempty"` // time spent waiting for a worker to be reserved
-	ExecutionTime   time.Duration `json:"execution_time,omitempty"`   // time spent executing the job
-	TotalTime       time.Duration `json:"total_time,omitempty"`       // total time from submission to completion
-}
+const (
+	StatusJobSuccess          JobStatus = "JOB_SUCCESS"
+	StatusJobFailed           JobStatus = "JOB_FAILED"
+	StatusJobTimeout          JobStatus = "JOB_TIMEOUT"
+	StatusJobCompilationError JobStatus = "JOB_COMPILATION_ERROR"
+	StatusJobCanceled         JobStatus = "JOB_CANCELED"
+)
 
 type StreamingEvent struct {
-	Kind        	string // "stdout" | "stderr" | "error" | "cancel" | "metric"
-	WorkerId    	*string `json:"worker_id"`
-	Message     	*string `json:"Message,omitempty"`
-	WorkerMetric 	*WorkerMetricPayload `json:"worker_metric,omitempty"`
-	JobMetric   	*JobMetricPayload  `json:"job_metric,omitempty"`
+	Kind     string    `json:"kind"` // "log" | "status" | ...
+	WorkerId string    `json:"worker_id"`
+	Message  string    `json:"message,omitempty"`
+	Status   JobStatus `json:"status,omitempty"`
 }
 
 type StreamingJobEvent struct {
-	JobUID        uuid.UUID `json:"job_uid"`
-	ProblemId     int
-	Events        []StreamingEvent
-	UserId        string
-	SequenceIndex int
+	JobUID        uuid.UUID        `json:"job_uid"`
+	ProblemId     int              `json:"problem_id"`
+	Events        []StreamingEvent `json:"events"`
+	UserId        string           `json:"user_id"`
+	SequenceIndex int              `json:"sequence_index"`
+}
+
+type CancelJobRequest struct {
+	JobUID uuid.UUID
 }

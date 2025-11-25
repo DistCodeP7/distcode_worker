@@ -4,93 +4,97 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	t "github.com/DistCodeP7/distcode_worker/types"
 )
 
 type WorkerManager struct {
-	workers     map[string]WorkerInterface
-	idleWorkers []WorkerInterface
-	jobPool     map[int][]WorkerInterface
-	mu          sync.RWMutex
+	maxWorkers     int
+	jobs           map[int][]WorkerInterface
+	mu             sync.RWMutex
+	workerProducer WorkerProducer
 }
 
-func NewWorkerManager(initialWorkers []WorkerInterface) (*WorkerManager, error) {
-	workersMap := make(map[string]WorkerInterface, len(initialWorkers))
-	idleWorkersCopy := make([]WorkerInterface, len(initialWorkers))
-
-	for i, worker := range initialWorkers {
-		if worker.ID() == "" {
-			return nil, fmt.Errorf("worker at index %d has an empty ID", i)
-		}
-		workersMap[worker.ID()] = worker
-		idleWorkersCopy[i] = worker
-	}
-
+func NewWorkerManager(maxWorkers int, workerFactory WorkerProducer) (*WorkerManager, error) {
 	manager := &WorkerManager{
-		workers:     workersMap,
-		idleWorkers: idleWorkersCopy,
-		jobPool:     make(map[int][]WorkerInterface),
+		maxWorkers:     maxWorkers,
+		jobs:           make(map[int][]WorkerInterface),
+		workerProducer: workerFactory,
 	}
 
 	return manager, nil
 }
 
-func (w *WorkerManager) ReserveWorkers(jobId, jobSize int) ([]WorkerInterface, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (wm *WorkerManager) ReserveWorkers(jobId int, specs []t.NodeSpec) ([]WorkerInterface, error) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
 
-	if len(w.idleWorkers) < jobSize {
-		return nil, fmt.Errorf("not enough idle workers currently")
+	// TODO CHECK maxWorkers limit
+	workers, err := wm.workerProducer.NewWorkers(context.TODO(), specs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobId, err)
 	}
 
-	reserved := w.idleWorkers[:jobSize]
-	w.idleWorkers = w.idleWorkers[jobSize:]
-	reservedCopy := make([]WorkerInterface, len(reserved))
-	copy(reservedCopy, reserved)
+	wm.jobs[jobId] = workers
 
-	w.jobPool[jobId] = reserved
-
-	return reservedCopy, nil
+	return workers, nil
 }
 
-func (w *WorkerManager) Shutdown() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+func (wm *WorkerManager) removeWorkers(workers []WorkerInterface) error {
+	// Create waitgroup to stop workers concurrently
 	var wg sync.WaitGroup
-	var firstErr error
-	var errMu sync.Mutex
+	errors := make(chan error, len(workers))
+	defer close(errors)
 
-	for _, worker := range w.workers {
-		wg.Add(1)
-		go func(wk WorkerInterface) {
-			defer wg.Done()
-			if err := wk.Stop(context.Background()); err != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
+	for _, w := range workers {
+		wg.Go(func() {
+			if err := w.Stop(context.TODO()); err != nil {
+				errors <- err
 			}
-		}(worker)
+		})
 	}
 
 	wg.Wait()
-	w.workers = nil
-	w.idleWorkers = nil
-	w.jobPool = nil
-	return firstErr
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to stop some workers: %v", errors)
+	}
+
+	return nil
 }
 
-func (w *WorkerManager) ReleaseJob(jobId int) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (wm *WorkerManager) Shutdown() error {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
 
-	reservedWorkers, ok := w.jobPool[jobId]
+	var allWorkers []WorkerInterface
+	for key, workers := range wm.jobs {
+		allWorkers = append(allWorkers, workers...)
+		delete(wm.jobs, key)
+	}
+
+	if err := wm.removeWorkers(allWorkers); err != nil {
+		return fmt.Errorf("failed to remove workers during shutdown: %w", err)
+	}
+
+	// Help GC
+	wm.jobs = nil
+	return nil
+}
+
+func (wm *WorkerManager) ReleaseJob(jobId int) error {
+	wm.mu.Lock()
+	reservedWorkers, ok := wm.jobs[jobId]
 	if !ok {
 		return fmt.Errorf("jobId %d not found", jobId)
 	}
 
-	delete(w.jobPool, jobId)
-	w.idleWorkers = append(w.idleWorkers, reservedWorkers...)
+	delete(wm.jobs, jobId)
+	wm.mu.Unlock()
+
+	if err := wm.removeWorkers(reservedWorkers); err != nil {
+		return fmt.Errorf("failed to release workers for job %d: %v", jobId, err)
+	}
+
 	return nil
 }
