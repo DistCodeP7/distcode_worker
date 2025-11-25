@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/mq"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
@@ -41,7 +42,13 @@ func main() {
 		}
 	}()
 
-	wm, err := worker.NewWorkerManager(numWorkers, worker.NewDockerWorkerProducer(appResources.DockerCli, workerImageName))
+	// Serve a metrics endpoint
+	m := metrics.NewInMemoryMetricsCollector()
+	server := metrics.NewHTTPServer(":8001", m)
+	go server.Run(appResources.Ctx)
+
+	wp := worker.NewDockerWorkerProducer(appResources.DockerCli, workerImageName)
+	wm, err := worker.NewWorkerManager(numWorkers, wp)
 
 	if err != nil {
 		log.Fatalf("Failed to create worker manager: %v", err)
@@ -53,6 +60,7 @@ func main() {
 		resultsCh,
 		wm,
 		worker.NewDockerNetworkManager(appResources.DockerCli),
+		m,
 	)
 
 	go dispatcher.Run(appResources.Ctx)
