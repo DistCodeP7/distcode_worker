@@ -5,11 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/jonboulle/clockwork"
 )
@@ -95,7 +95,7 @@ func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 	d.mu.Unlock()
 
 	if !ok {
-		log.Printf("Cancel request for unknown or completed job: %s", req.JobUID.String())
+		log.Logger.Warnf("Cancel request for unknown or completed job: %s", req.JobUID.String())
 		return
 	}
 
@@ -131,9 +131,8 @@ func (d *JobDispatcher) sendJobResult(job types.JobRequest, aggregatedLogs strin
 	}
 }
 
-// High-level job processing
 func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
-	log.Printf("Starting job %v", job.ProblemId)
+	log.Logger.Infof("Starting job %d", job.ProblemId)
 
 	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
@@ -148,10 +147,10 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	d.handleJobCompletion(jobCtx, job, jc, logs, jobErr)
 
 	if err := d.workerManager.ReleaseJob(job.ProblemId); err != nil {
-		log.Printf("Error releasing job %d workers: %v", job.ProblemId, err)
+		log.Logger.Errorf("Error releasing job %d workers: %v", job.ProblemId, err)
 	}
 
-	log.Printf("Finished job %v", job.ProblemId)
+	log.Logger.Infof("Finished job %d", job.ProblemId)
 }
 
 // Reserve workers with retry
@@ -204,7 +203,6 @@ func (d *JobDispatcher) runWorkers(ctx context.Context, job types.JobRequest, wo
 	var jobErr error
 	var mu sync.Mutex
 
-	// Setup network
 	cleanup, _, netErr := d.networkManager.CreateAndConnect(ctx, workers)
 	if netErr != nil {
 		return "", fmt.Errorf("failed to set up network: %w", netErr)
@@ -215,21 +213,16 @@ func (d *JobDispatcher) runWorkers(ctx context.Context, job types.JobRequest, wo
 		}
 	}()
 
-	// small delay to allow network to settle
-	time.Sleep(500 * time.Millisecond)
-
 	for i, worker := range workers {
 		wg.Add(1)
 		go func(worker WorkerInterface, spec types.NodeSpec) {
 			defer wg.Done()
-
 			wLogs, err := d.runWorkerJob(ctx, worker, spec)
 
 			mu.Lock()
 			logs.WriteString(fmt.Sprintf("--- Worker %s ---\n%s", worker.ID()[:12], wLogs))
 			if err != nil {
 				jobErr = err
-				// cancel job context to stop other workers
 				d.mu.Lock()
 				jc, ok := d.activeJobs[job.JobUID.String()]
 				d.mu.Unlock()
@@ -260,58 +253,54 @@ func (d *JobDispatcher) runWorkerJob(ctx context.Context, worker WorkerInterface
 	workerID := worker.ID()
 
 	if spec.BuildCommand != "" {
-		log.Printf("Building code on worker %s: %s", workerID[:12], spec.BuildCommand)
+		log.Logger.Infof("Building code on worker %s: %s", workerID[:12], spec.BuildCommand)
 		logBuffer.WriteString(fmt.Sprintf("[Build] Running: %s", spec.BuildCommand))
 		if err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
 			Cmd:          spec.BuildCommand,
 			OutputWriter: &logBuffer,
 		}); err != nil {
-			logBuffer.WriteString(fmt.Sprintf("[Build ERROR] %v", err))
+			logBuffer.WriteString(fmt.Sprintf("[Build ERROR] %v\n", err))
 			return logBuffer.String(), &BuildError{WorkerID: workerID, Err: err}
 		}
-		logBuffer.WriteString("[Build Success]")
+		logBuffer.WriteString("[Build Success]\n")
 	}
 
-	log.Printf("Executing code on worker %s: %s", workerID[:12], spec.EntryCommand)
+	log.Logger.Infof("Executing code on worker %s: %s", workerID[:12], spec.EntryCommand)
 	logBuffer.WriteString(fmt.Sprintf("[Execute] Running: %s	", spec.EntryCommand))
 	if err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
 		Cmd:          spec.EntryCommand,
 		OutputWriter: &logBuffer,
 	}); err != nil {
-		logBuffer.WriteString(fmt.Sprintf("[Execute ERROR] %v", err))
+		logBuffer.WriteString(fmt.Sprintf("[Execute ERROR] %v\n", err))
 		return logBuffer.String(), fmt.Errorf("execution failed on worker %s: %w", workerID[:12], err)
 	}
-	logBuffer.WriteString("[Execute Success]")
+	logBuffer.WriteString("[Execute Success]\n")
 
 	return logBuffer.String(), nil
 }
 
 // Handle job completion based on context or worker error
 func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRequest, jc *JobCancellation, aggregatedLogs string, workerError error) {
-	if jc != nil && jc.CanceledByUser.Load() {
-		log.Printf("Job %d canceled by user request", job.ProblemId)
+	switch {
+	case jc != nil && jc.CanceledByUser.Load():
+		log.Logger.Infof("Job %d canceled by user request", job.ProblemId)
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobCanceled, "job canceled by user")
-		return
-	}
 
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		log.Printf("Job %d timed out after %ds", job.ProblemId, job.Timeout)
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		log.Logger.Warnf("Job %d timed out after %ds", job.ProblemId, job.Timeout)
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobTimeout, fmt.Sprintf("job timed out after %ds", job.Timeout))
-		return
-	}
 
-	if workerError != nil {
+	case workerError != nil:
 		switch e := workerError.(type) {
 		case *BuildError:
-			log.Printf("Job %d failed due to build error: %v", job.ProblemId, e)
+			log.Logger.Errorf("Job %d failed due to build error on worker %s", job.ProblemId, e.WorkerID[:12])
 			d.sendJobResult(job, aggregatedLogs, types.StatusJobCompilationError, fmt.Sprintf("build error on worker: %s", e.WorkerID[:12]))
 		default:
-			log.Printf("Job %d failed due to worker error: %v", job.ProblemId, e)
+			log.Logger.Errorf("Job %d failed due to worker error: %v", job.ProblemId, workerError)
 			d.sendJobResult(job, aggregatedLogs, types.StatusJobFailed, workerError.Error())
 		}
-		return
-	}
 
-	// Success
-	d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
+	default:
+		d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
+	}
 }

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -71,7 +71,7 @@ func handleDelivery[T any](d amqp.Delivery, out chan<- T) {
 
 	var msg T
 	if err := json.Unmarshal(d.Body, &msg); err != nil {
-		log.Printf("Invalid message: %s", d.Body)
+		log.Logger.WithError(err).Error("Failed to unmarshal MQ message")
 		return
 	}
 
@@ -79,10 +79,10 @@ func handleDelivery[T any](d amqp.Delivery, out chan<- T) {
 
 	switch any(msg).(type) {
 	case types.JobRequest:
-		log.Printf("Received job from MQ")
+		log.Logger.Trace("Received job from MQ")
 	case types.CancelJobRequest:
-		log.Printf("Received job cancellation from MQ")
+		log.Logger.Trace("Received job cancellation from MQ")
 	default:
-		log.Printf("Received %T from MQ", msg)
+		log.Logger.Warnf("Received %T from MQ", msg)
 	}
 }

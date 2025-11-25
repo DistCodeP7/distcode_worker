@@ -1,22 +1,28 @@
 package main
 
 import (
-	"log"
-
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/mq"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
+	l "github.com/sirupsen/logrus"
 )
 
 func main() {
+	log.Init(l.DebugLevel, true)
 	// Parse command line flags
 	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
+	log.Logger.WithFields(l.Fields{
+		"worker_image":     workerImageName,
+		"controller_image": controllerImageName,
+		"num_workers":      numWorkers,
+	}).Info("Application initialized")
 
 	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
 	appResources, err := setup.SetupApp(workerImageName, controllerImageName)
 	if err != nil {
-		log.Fatalf("Fatal error in setup: %v", err)
+		log.Logger.WithError(err).Fatal("Fatal error in setup")
 	}
 	defer appResources.Cancel()
 	defer appResources.DockerCli.Close()
@@ -30,21 +36,21 @@ func main() {
 	// Start a goroutine to receive jobs from RabbitMQ
 	go func() {
 		if err := mq.StartJobConsumer(appResources.Ctx, jobsCh); err != nil {
-			log.Fatalf("MQ error: %v", err)
+			log.Logger.WithError(err).Error("MQ error")
 		}
 	}()
 
 	// Start a goroutine to receive cancel requests from RabbitMQ
 	go func() {
 		if err := mq.StartJobCanceller(appResources.Ctx, cancelJobCh); err != nil {
-			log.Fatalf("MQ error: %v", err)
+			log.Logger.WithError(err).Error("MQ error")
 		}
 	}()
 
 	wm, err := worker.NewWorkerManager(numWorkers, worker.NewDockerWorkerProducer(appResources.DockerCli, workerImageName))
 
 	if err != nil {
-		log.Fatalf("Failed to create worker manager: %v", err)
+		log.Logger.WithError(err).Fatal("Failed to create worker manager")
 	}
 
 	dispatcher := worker.NewJobDispatcher(
@@ -59,14 +65,14 @@ func main() {
 	// Start separate publishers for results and metrics
 	go func() {
 		if err := mq.PublishStreamingEvents(appResources.Ctx, mq.EventTypeResults, resultsCh); err != nil {
-			log.Fatalf("MQ results publisher error: %v", err)
+			log.Logger.WithError(err).Fatal("MQ results publisher error")
 		}
 	}()
 
 	<-appResources.Ctx.Done()
 	if err := wm.Shutdown(); err != nil {
-		log.Printf("Error shutting down workers: %v", err)
+		log.Logger.WithError(err).Error("Error shutting down workers")
 	}
 
-	log.Println("All workers have finished. Exiting.")
+	log.Logger.Info("All workers have finished. Exiting.")
 }

@@ -6,6 +6,7 @@ require (
 	github.com/docker/docker v28.3.1+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/sirupsen/logrus v1.9.3
 )
 
 require (
