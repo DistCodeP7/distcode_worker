@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/log"
+	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/jonboulle/clockwork"
 )
@@ -290,10 +290,10 @@ func (d *JobDispatcher) runWorkerJob(ctx context.Context, worker WorkerInterface
 func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRequest, jc *JobCancellation, startTime time.Time, aggregatedLogs string, workerError error) {
 	duration := d.clock.Since(startTime).Seconds()
 	d.metricsCollector.ObserveJobDuration(duration)
-
-	if jc != nil && jc.CanceledByUser.Load() {
+	switch {
+	case jc != nil && jc.CanceledByUser.Load():
 		d.metricsCollector.IncJobCanceled()
-		log.Printf("Job %d canceled by user request", job.ProblemId)
+		log.Logger.Infof("Job %d canceled by user request", job.ProblemId)
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobCanceled, "job canceled by user")
 
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -315,9 +315,6 @@ func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRe
 
 	default:
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
+		d.metricsCollector.IncJobSuccess()
 	}
-
-	// Success
-	d.metricsCollector.IncJobSuccess()
-	d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
 }
