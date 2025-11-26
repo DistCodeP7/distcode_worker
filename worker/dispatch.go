@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/jonboulle/clockwork"
@@ -39,12 +40,13 @@ type JobCancellation struct {
 
 // JobDispatcher orchestrates job execution across workers
 type JobDispatcher struct {
-	cancelJobChan  <-chan types.CancelJobRequest
-	jobChannel     <-chan types.JobRequest
-	resultsChannel chan<- types.StreamingJobEvent
-	workerManager  WorkerManagerInterface
-	networkManager NetworkManagerInterface
-	clock          clockwork.Clock
+	cancelJobChan    <-chan types.CancelJobRequest
+	jobChannel       <-chan types.JobRequest
+	resultsChannel   chan<- types.StreamingJobEvent
+	workerManager    WorkerManagerInterface
+	networkManager   NetworkManagerInterface
+	metricsCollector metrics.JobMetricsCollector
+	clock            clockwork.Clock
 
 	mu         sync.Mutex
 	activeJobs map[string]*JobCancellation
@@ -56,16 +58,18 @@ func NewJobDispatcher(
 	resultsChannel chan<- types.StreamingJobEvent,
 	workerManager WorkerManagerInterface,
 	networkManager NetworkManagerInterface,
+	metricsCollector metrics.JobMetricsCollector,
 	opts ...func(*JobDispatcher),
 ) *JobDispatcher {
 	d := &JobDispatcher{
-		cancelJobChan:  cancelJobChan,
-		jobChannel:     jobChannel,
-		resultsChannel: resultsChannel,
-		workerManager:  workerManager,
-		networkManager: networkManager,
-		clock:          clockwork.NewRealClock(),
-		activeJobs:     make(map[string]*JobCancellation),
+		cancelJobChan:    cancelJobChan,
+		jobChannel:       jobChannel,
+		resultsChannel:   resultsChannel,
+		workerManager:    workerManager,
+		networkManager:   networkManager,
+		metricsCollector: metricsCollector,
+		clock:            clockwork.NewRealClock(),
+		activeJobs:       make(map[string]*JobCancellation),
 	}
 
 	for _, opt := range opts {
@@ -133,6 +137,7 @@ func (d *JobDispatcher) sendJobResult(job types.JobRequest, aggregatedLogs strin
 
 func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	log.Logger.Infof("Starting job %d", job.ProblemId)
+	d.metricsCollector.IncJobTotal()
 
 	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
@@ -143,8 +148,10 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	jobCtx, jc := d.createJobContext(ctx, job)
 	defer d.cleanupJob(job.JobUID.String())
 
+	startTime := d.clock.Now()
+
 	logs, jobErr := d.runWorkers(jobCtx, job, workers)
-	d.handleJobCompletion(jobCtx, job, jc, logs, jobErr)
+	d.handleJobCompletion(jobCtx, job, jc, startTime, logs, jobErr)
 
 	if err := d.workerManager.ReleaseJob(job.ProblemId); err != nil {
 		log.Logger.Errorf("Error releasing job %d workers: %v", job.ProblemId, err)
@@ -280,22 +287,28 @@ func (d *JobDispatcher) runWorkerJob(ctx context.Context, worker WorkerInterface
 }
 
 // Handle job completion based on context or worker error
-func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRequest, jc *JobCancellation, aggregatedLogs string, workerError error) {
-	switch {
-	case jc != nil && jc.CanceledByUser.Load():
-		log.Logger.Infof("Job %d canceled by user request", job.ProblemId)
+func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRequest, jc *JobCancellation, startTime time.Time, aggregatedLogs string, workerError error) {
+	duration := d.clock.Since(startTime).Seconds()
+	d.metricsCollector.ObserveJobDuration(duration)
+
+	if jc != nil && jc.CanceledByUser.Load() {
+		d.metricsCollector.IncJobCanceled()
+		log.Printf("Job %d canceled by user request", job.ProblemId)
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobCanceled, "job canceled by user")
 
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		d.metricsCollector.IncJobTimeout()
 		log.Logger.Warnf("Job %d timed out after %ds", job.ProblemId, job.Timeout)
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobTimeout, fmt.Sprintf("job timed out after %ds", job.Timeout))
 
 	case workerError != nil:
 		switch e := workerError.(type) {
 		case *BuildError:
+			d.metricsCollector.IncJobFailure()
 			log.Logger.Errorf("Job %d failed due to build error on worker %s", job.ProblemId, e.WorkerID[:12])
 			d.sendJobResult(job, aggregatedLogs, types.StatusJobCompilationError, fmt.Sprintf("build error on worker: %s", e.WorkerID[:12]))
 		default:
+			d.metricsCollector.IncJobFailure()
 			log.Logger.Errorf("Job %d failed due to worker error: %v", job.ProblemId, workerError)
 			d.sendJobResult(job, aggregatedLogs, types.StatusJobFailed, workerError.Error())
 		}
@@ -303,4 +316,8 @@ func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRe
 	default:
 		d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
 	}
+
+	// Success
+	d.metricsCollector.IncJobSuccess()
+	d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
 }
