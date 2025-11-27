@@ -17,12 +17,14 @@ import (
 )
 
 type Worker struct {
+	alias       string
 	containerID string
 	dockerCli   *client.Client
 }
 
 type WorkerInterface interface {
 	ID() string
+	Alias() string
 	ConnectToNetwork(ctx context.Context, networkName, alias string) error
 	DisconnectFromNetwork(ctx context.Context, networkName string) error
 	Stop(ctx context.Context) error
@@ -33,6 +35,11 @@ var _ WorkerInterface = (*Worker)(nil)
 
 func (w *Worker) ID() string {
 	return w.containerID
+}
+
+// Alias returns the alias of the worker.
+func (w *Worker) Alias() string {
+	return w.alias
 }
 
 func (w *Worker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
@@ -106,6 +113,7 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 	w := &Worker{
 		containerID: resp.ID,
 		dockerCli:   cli,
+		alias:       spec.Alias,
 	}
 
 	tarStream, err := createTarStream(spec.Files)

@@ -38,9 +38,8 @@ func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers [
 	}
 	log.Printf("Created network %s", networkName)
 
-	for i, worker := range workers {
-		alias := fmt.Sprintf("worker-%d", i)
-		if err := worker.ConnectToNetwork(ctx, networkName, alias); err != nil {
+	for _, worker := range workers {
+		if err := worker.ConnectToNetwork(ctx, networkName, worker.Alias()); err != nil {
 			log.Printf("Failed to connect worker %s to network %s: %v", worker.ID(), networkName, err)
 			_ = dnm.dockerCli.NetworkRemove(ctx, networkName)
 			return nil, "", err
