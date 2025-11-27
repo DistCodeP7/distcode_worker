@@ -25,17 +25,27 @@ func NewWorkerManager(maxWorkers int, workerFactory WorkerProducer) (*WorkerMana
 	return manager, nil
 }
 
-func (wm *WorkerManager) ReserveWorkers(jobId int, specs []t.NodeSpec) ([]WorkerInterface, error) {
+func (wm *WorkerManager) ReserveWorkers(jobID int, specs []t.NodeSpec) ([]WorkerInterface, error) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
-	// TODO CHECK maxWorkers limit
-	workers, err := wm.workerProducer.NewWorkers(context.TODO(), specs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobId, err)
+	current := 0
+
+	for _, workers := range wm.jobs {
+		current += len(workers)
 	}
 
-	wm.jobs[jobId] = workers
+	if current+len(specs) > wm.maxWorkers {
+		return nil, fmt.Errorf("worker limit exceeded: current=%d, requested=%d, max=%d",
+			current, len(specs), wm.maxWorkers)
+	}
+
+	workers, err := wm.workerProducer.NewWorkers(context.TODO(), specs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobID, err)
+	}
+
+	wm.jobs[jobID] = workers
 
 	return workers, nil
 }
@@ -82,18 +92,18 @@ func (wm *WorkerManager) Shutdown() error {
 	return nil
 }
 
-func (wm *WorkerManager) ReleaseJob(jobId int) error {
+func (wm *WorkerManager) ReleaseJob(jobID int) error {
 	wm.mu.Lock()
-	reservedWorkers, ok := wm.jobs[jobId]
+	reservedWorkers, ok := wm.jobs[jobID]
 	if !ok {
-		return fmt.Errorf("jobId %d not found", jobId)
+		return fmt.Errorf("jobId %d not found", jobID)
 	}
 
-	delete(wm.jobs, jobId)
+	delete(wm.jobs, jobID)
 	wm.mu.Unlock()
 
 	if err := wm.removeWorkers(reservedWorkers); err != nil {
-		return fmt.Errorf("failed to release workers for job %d: %v", jobId, err)
+		return fmt.Errorf("failed to release workers for job %d: %v", jobID, err)
 	}
 
 	return nil

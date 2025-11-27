@@ -1,11 +1,12 @@
+// Package worker wraps the Docker API for executing Golang applications using dsnet
 package worker
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	t "github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/docker/docker/api/types/container"
@@ -30,41 +31,38 @@ type WorkerInterface interface {
 
 var _ WorkerInterface = (*Worker)(nil)
 
-// ID returns the Docker container ID associated with the worker.
 func (w *Worker) ID() string {
 	return w.containerID
 }
 
-// ConnectToNetwork connects the worker's container to the specified Docker network with the given alias.
 func (w *Worker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
 	return w.dockerCli.NetworkConnect(ctx, networkName, w.containerID, &network.EndpointSettings{
 		Aliases: []string{alias},
 	})
 }
 
-// DisconnectFromNetwork disconnects the worker's container from the specified Docker network.
 func (w *Worker) DisconnectFromNetwork(ctx context.Context, networkName string) error {
 	return w.dockerCli.NetworkDisconnect(ctx, networkName, w.containerID, true)
 }
 
-// Stop stops and removes the Docker container associated with the worker.
+// Stop stops and removes the container. Logs only container stop/removal events.
 func (w *Worker) Stop(ctx context.Context) error {
-	log.Printf("Stopping and removing container %s", w.containerID[:12])
+	log.Logger.Infof("Stopping container %s", w.containerID[:12])
 
 	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: nil}); err != nil {
-		log.Printf("Warning: failed to gracefully stop container %s: %v", w.containerID[:12], err)
+		log.Logger.Warnf("Failed to gracefully stop container %s: %v", w.containerID[:12], err)
 	}
 
 	if err := w.dockerCli.ContainerRemove(ctx, w.containerID, container.RemoveOptions{Force: true}); err != nil {
 		return fmt.Errorf("failed to forcefully remove container: %w", err)
 	}
 
+	log.Logger.Infof("Container %s stopped and removed", w.containerID[:12])
 	return nil
 }
 
-// NewWorker creates and starts a new Docker container based on the provided worker image and node specification.
-// It sets up the container with the specified environment variables and files, and returns a Worker instance.
-// The container will be stopped and removed if any step fails during initialization.
+// NewWorker creates and starts a new Docker container and returns the Worker instance.
+// Errors are returned for the caller to log if needed.
 func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, spec t.NodeSpec) (*Worker, error) {
 	envVars := make([]string, 0, len(spec.Envs))
 	for _, env := range spec.Envs {
@@ -73,7 +71,6 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 
 	containerConfig := &container.Config{
 		Image:      workerImageName,
-		Cmd:        []string{"sleep", "infinity"},
 		Env:        envVars,
 		Tty:        false,
 		WorkingDir: "/app/tmp",
@@ -113,35 +110,34 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 
 	tarStream, err := createTarStream(spec.Files)
 	if err != nil {
-		w.Stop(ctx)
+		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to create tar stream: %w", err)
 	}
 
-	err = cli.CopyToContainer(ctx, w.ID(), "/app/tmp", tarStream, container.CopyToContainerOptions{})
-	if err != nil {
-		w.Stop(ctx)
+	if err := cli.CopyToContainer(ctx, w.ID(), "/app/tmp", tarStream, container.CopyToContainerOptions{}); err != nil {
+		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to copy spec files to container: %w", err)
 	}
 
-	log.Printf("Starting container %s...", resp.ID[:12])
+	log.Logger.Infof("Starting container %s...", resp.ID[:12])
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		w.Stop(ctx)
+		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
-	log.Printf("Worker initialized with container %s", w.containerID[:12])
+	log.Logger.Infof("Worker initialized with container %s", w.containerID[:12])
 	return w, nil
 }
 
 type ExecuteCommandOptions struct {
 	Cmd          string
-	Envs         []t.EnvironmentVariable // optional
-	OutputWriter io.Writer               // optional, can default to os.Stdout
+	Envs         []t.EnvironmentVariable
+	OutputWriter io.Writer
 }
 
-// ExecuteCommand executes a command and streams all stdout/stderr directly into the provided io.Writer.
+// ExecuteCommand executes a command and streams stdout/stderr.
+// Only logs cancellation; errors are returned for the caller to handle/log.
 func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) error {
-
 	execEnvStrings := make([]string, 0, len(e.Envs))
 	for _, env := range e.Envs {
 		execEnvStrings = append(execEnvStrings, fmt.Sprintf("%s=%s", env.Key, env.Value))
@@ -169,7 +165,6 @@ func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) er
 	defer resp.Close()
 
 	done := make(chan error, 1)
-
 	go func() {
 		_, err := stdcopy.StdCopy(e.OutputWriter, e.OutputWriter, resp.Reader)
 		done <- err
@@ -177,7 +172,7 @@ func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) er
 
 	select {
 	case <-ctx.Done():
-		log.Printf("Job cancelled, stopping current execution in container %s", w.containerID)
+		log.Logger.Warnf("Job cancelled in container %s", w.containerID[:12])
 		return ctx.Err()
 	case err := <-done:
 		if err != nil && err != io.EOF {

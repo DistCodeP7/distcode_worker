@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+
+	"github.com/DistCodeP7/distcode_worker/log"
 
 	"github.com/DistCodeP7/distcode_worker/types"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -52,10 +53,10 @@ func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-c
 						return nil
 					}
 					if err := Publish(ctx, event, queueName); err != nil {
-						log.Printf("Publish error: %v", err)
+						log.Logger.WithError(err).Error("Publish error")
 						return err // triggers reconnect
 					}
-					log.Printf("Published %s for job %d", eventType, event.ProblemId)
+					log.Logger.Tracef("Published %s for job %d", eventType, event.ProblemId)
 				case <-ctx.Done():
 					return nil
 				}

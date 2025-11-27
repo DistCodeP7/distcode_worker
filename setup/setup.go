@@ -4,18 +4,19 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 type AppResources struct {
@@ -33,42 +34,41 @@ type AppResources struct {
 // Returns an AppResources struct containing the context, cancel function, and Docker client.
 // If any step fails, it cleans up resources and returns an error.
 func SetupApp(workerImageName string, controllerImageName string) (*AppResources, error) {
-	// Setup context with cancellation on interrupt signals
 	ctx, cancel := context.WithCancel(context.Background())
 	handleSignals(cancel)
 
-	// Initialize Docker client
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		cancel() // cleanup in case of error
+		cancel()
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
-	log.Println("Docker client initialized.")
+	log.Logger.Info("Docker client initialized")
 
-	// Pre-pull the worker image
 	effectiveWorkerImage, err := prePullImage(ctx, cli, workerImageName)
 	if err != nil {
 		cli.Close()
 		cancel()
-		return nil, fmt.Errorf("failed to pre-pull image %s: %w", workerImageName, err)
+		log.Logger.WithField("image", workerImageName).Fatal("Failed to pre-pull worker image")
 	}
-	log.Printf("Image '%s' is ready.", effectiveWorkerImage)
 
 	effectiveControllerImage, err := prePullImage(ctx, cli, controllerImageName)
 	if err != nil {
 		cli.Close()
 		cancel()
-		return nil, fmt.Errorf("failed to pre-pull image %s: %w", controllerImageName, err)
+		log.Logger.WithField("image", controllerImageName).Fatal("Failed to pre-pull controller image")
 	}
-	log.Printf("Image '%s' is ready.", effectiveControllerImage)
 
-	// Pre-warm the cache by running a dummy container
 	if err := prewarmCache(ctx, cli, effectiveWorkerImage); err != nil {
 		cli.Close()
 		cancel()
-		return nil, fmt.Errorf("failed to pre-warm cache: %w", err)
+		log.Logger.WithField("image", effectiveWorkerImage).Error("Failed to pre-warm cache")
+		return nil, err
 	}
-	log.Println("Cache pre-warming completed.")
+
+	log.Logger.WithFields(logrus.Fields{
+		"worker_image":     effectiveWorkerImage,
+		"controller_image": effectiveControllerImage,
+	}).Info("Application setup completed successfully")
 
 	return &AppResources{
 		Ctx:             ctx,
@@ -80,7 +80,6 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 }
 
 func prewarmCache(ctx context.Context, cli *client.Client, workerImageName string) error {
-	log.Println("Initializing a new prewarming worker...")
 	id := uuid.NewString()
 
 	hostPath, err := os.MkdirTemp("", "prewarming-worker-"+id)
@@ -88,6 +87,11 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
 	defer os.RemoveAll(hostPath)
+
+	log.Logger.WithFields(logrus.Fields{
+		"container_id": "prewarm-" + id,
+		"temp_path":    hostPath,
+	}).Info("Initializing prewarming worker")
 
 	containerConfig := &container.Config{
 		Image:      workerImageName,
@@ -105,7 +109,7 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 
 	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "prewarm-"+id)
 	if err != nil {
-		os.RemoveAll(hostPath)
+		log.Logger.WithFields(logrus.Fields{"temp_path": hostPath}).Error("Failed to create prewarming container")
 		return fmt.Errorf("failed to create prewarming container: %w", err)
 	}
 
@@ -113,9 +117,8 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 		_ = cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
 	}()
 
-	log.Printf("Starting prewarming container %s...", resp.ID[:12])
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		os.RemoveAll(hostPath)
+		log.Logger.WithField("container", resp.ID[:12]).Error("Failed to start prewarming container")
 		return fmt.Errorf("failed to start prewarming container: %w", err)
 	}
 
@@ -126,11 +129,11 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 		"net/http"
 		"encoding/json"
 		"crypto/sha256"
-		// add more common stdlib imports
 	)
 	func main() { fmt.Println("Prewarm done") }`
 
 	if err := os.WriteFile(filepath.Join(hostPath, "main.go"), []byte(warmupCode), 0644); err != nil {
+		log.Logger.WithField("path", hostPath).Error("Failed to write warmup code")
 		return fmt.Errorf("failed to write warmup code: %w", err)
 	}
 
@@ -141,8 +144,8 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 	}
 
 	execID, err := cli.ContainerExecCreate(ctx, resp.ID, execConfig)
-
 	if err != nil {
+		log.Logger.WithField("container", resp.ID[:12]).Error("Failed to create exec instance")
 		return fmt.Errorf("failed to create exec instance: %w", err)
 	}
 
@@ -150,50 +153,59 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 	defer cancel()
 
 	if err := cli.ContainerExecStart(ctx, execID.ID, container.ExecStartOptions{Detach: true}); err != nil {
+		log.Logger.WithField("exec_id", execID.ID).Error("Failed to start exec instance")
 		return fmt.Errorf("failed to start exec: %w", err)
 	}
 
 	inspectResp, err := cli.ContainerExecInspect(containerCtx, execID.ID)
 	if err != nil {
+		log.Logger.WithField("exec_id", execID.ID).Error("Failed to inspect exec instance")
 		return fmt.Errorf("failed to inspect exec instance: %w", err)
 	}
 
 	if inspectResp.ExitCode != 0 {
+		log.Logger.WithFields(logrus.Fields{
+			"container": resp.ID[:12],
+			"exit_code": inspectResp.ExitCode,
+		}).Error("Prewarm execution finished with non-zero exit code")
 		return fmt.Errorf("execution finished with non-zero exit code: %d", inspectResp.ExitCode)
 	}
 
+	log.Logger.WithField("container", resp.ID[:12]).Info("Prewarm container executed successfully")
 	return nil
 }
 
 func prePullImage(ctx context.Context, cli *client.Client, imageName string) (string, error) {
-	// Check if image exists locally
 	images, err := cli.ImageList(ctx, image.ListOptions{})
 	if err != nil {
+		log.Logger.WithField("image", imageName).Error("Failed to list local images")
 		return "", fmt.Errorf("failed to list local images: %w", err)
 	}
+
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
 			if tag == imageName {
-				log.Printf("Image '%s' found locally, skipping pull.", imageName)
+				log.Logger.WithField("image", imageName).Debug("Image found locally, skipping pull")
 				return imageName, nil
 			}
 		}
 	}
 
-	// Pull only if not found locally
-	log.Printf("Pulling Docker image '%s'...", imageName)
+	log.Logger.WithField("image", imageName).Info("Pulling Docker image")
 	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
 	if err != nil {
+		log.Logger.WithField("image", imageName).Error("Failed to pull image")
 		return "", err
 	}
 	defer reader.Close()
 
 	_, err = io.Copy(os.Stdout, reader)
 	if err != nil && err != io.EOF {
-		log.Printf("Warning: Error reading image pull output: %v", err)
+		log.Logger.WithField("image", imageName).Warn("Error reading image pull output")
+		return "", fmt.Errorf("failed to read image pull output: %w", err)
 	}
 
-	log.Printf("Image '%s' pulled successfully.", imageName)
+	log.Logger.WithField("image", imageName).Debug("Image pulled successfully")
 	return imageName, nil
 }
 
@@ -210,7 +222,7 @@ func handleSignals(cancel context.CancelFunc) {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigChan
-		log.Printf("Received signal %v. Initiating graceful shutdown...", sig)
+		log.Logger.WithField("signal", sig).Info("Received termination signal, initiating graceful shutdown")
 		cancel()
 	}()
 }
