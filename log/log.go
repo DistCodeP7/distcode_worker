@@ -13,8 +13,9 @@ func Init(level logrus.Level, pretty bool) {
 
 	if pretty {
 		Logger.Formatter = &logrus.TextFormatter{
-			FullTimestamp: true,
-			ForceColors:   true,
+			FullTimestamp:   true,
+			TimestampFormat: "02-01-2006 15:04:05",
+			ForceColors:     true,
 		}
 	} else {
 		// default JSON output

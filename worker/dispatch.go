@@ -12,7 +12,9 @@ import (
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -22,8 +24,8 @@ const (
 
 // WorkerManagerInterface manages worker reservation and lifecycle
 type WorkerManagerInterface interface {
-	ReserveWorkers(jobID int, specs []types.NodeSpec) ([]WorkerInterface, error)
-	ReleaseJob(jobID int) error
+	ReserveWorkers(jobID uuid.UUID, specs []types.NodeSpec) ([]WorkerInterface, error)
+	ReleaseJob(jobID uuid.UUID) error
 	Shutdown() error
 }
 
@@ -136,7 +138,7 @@ func (d *JobDispatcher) sendJobResult(job types.JobRequest, aggregatedLogs strin
 }
 
 func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
-	log.Logger.Infof("Starting job %d", job.ProblemId)
+	log.Logger.Infof("Starting job %s", job.JobUID.String())
 	d.metricsCollector.IncJobTotal()
 
 	workers, err := d.requestWorkers(ctx, job)
@@ -153,17 +155,17 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
 	logs, jobErr := d.runWorkers(jobCtx, job, workers)
 	d.handleJobCompletion(jobCtx, job, jc, startTime, logs, jobErr)
 
-	if err := d.workerManager.ReleaseJob(job.ProblemId); err != nil {
-		log.Logger.Errorf("Error releasing job %d workers: %v", job.ProblemId, err)
+	if err := d.workerManager.ReleaseJob(job.JobUID); err != nil {
+		log.Logger.Errorf("Error releasing job %s workers: %v", job.JobUID.String(), err)
 	}
 
-	log.Logger.Infof("Finished job %d", job.ProblemId)
+	log.Logger.Infof("Finished job %s", job.JobUID.String())
 }
 
 // Reserve workers with retry
 func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.JobRequest) ([]WorkerInterface, error) {
 	for {
-		workers, err := d.workerManager.ReserveWorkers(job.ProblemId, job.Nodes)
+		workers, err := d.workerManager.ReserveWorkers(job.JobUID, job.Nodes)
 		if err == nil {
 			return workers, nil
 		}
@@ -305,7 +307,12 @@ func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRe
 		switch e := workerError.(type) {
 		case *BuildError:
 			d.metricsCollector.IncJobFailure()
-			log.Logger.Errorf("Job %d failed due to build error on worker %s", job.ProblemId, e.WorkerID[:12])
+			log.Logger.WithFields(
+				logrus.Fields{
+					"job_id":    job.JobUID.String(),
+					"worker_id": e.WorkerID[:12],
+					"error":     e.Err,
+				}).Errorf("Failed build")
 			d.sendJobResult(job, aggregatedLogs, types.StatusJobCompilationError, fmt.Sprintf("build error on worker: %s", e.WorkerID[:12]))
 		default:
 			d.metricsCollector.IncJobFailure()

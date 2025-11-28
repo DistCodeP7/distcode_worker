@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/sirupsen/logrus"
 )
 
 type Worker struct {
@@ -78,6 +79,7 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 
 	containerConfig := &container.Config{
 		Image:      workerImageName,
+		Cmd:        []string{"sleep", "infinity"},
 		Env:        envVars,
 		Tty:        false,
 		WorkingDir: "/app/tmp",
@@ -127,7 +129,13 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 		return nil, fmt.Errorf("failed to copy spec files to container: %w", err)
 	}
 
-	log.Logger.Infof("Starting container %s...", resp.ID[:12])
+	log.Logger.WithFields(
+		logrus.Fields{
+			"alias":        spec.Alias,
+			"container_id": resp.ID[:12],
+		},
+	).Info("Creating worker container")
+
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to start container: %w", err)

@@ -1,8 +1,6 @@
 import json
 import pika
 import uuid
-import time # Import time for potential future debugging
-
 # Configuration
 RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 QUEUE_NAME = "jobs"
@@ -178,23 +176,90 @@ func main() {
 }
 """
 
+test = """
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"time"
+
+	"distcode/exercises/mutex" // Tester relies on the same strict definition
+
+	c "github.com/distcodep7/dsnet/controller"
+	"github.com/distcodep7/dsnet/dsnet"
+)
+
+func main() {
+	go c.Serve()
+	time.Sleep(time.Duration(5) * time.Second)
+
+	tester, _ := dsnet.NewNode("TESTER", "Test:50051")
+	defer tester.Close()
+
+	// 1. Prepare the specific Trigger
+	trigger := mutex.ElectionTrigger{
+		BaseMessage: dsnet.BaseMessage{
+			From: "TESTER",
+			To:   "N1",
+			Type: "ElectionTrigger", // Matches struct name
+		},
+		ElectionID: "TEST_001",
+	}
+
+	log.Println("Sending ElectionTrigger...")
+	tester.Send(context.Background(), "N1", trigger)
+
+	// 2. Wait for the specific Result
+	timeout := time.After(15 * time.Second)
+	for {
+		select {
+		case event := <-tester.Inbound:
+			if event.Type == "ElectionResult" {
+				var result mutex.ElectionResult
+				json.Unmarshal(event.Payload, &result)
+
+				if result.Success && result.LeaderID == "N1" {
+					log.Println("✅ TEST PASSED: Leader elected successfully")
+					return
+				}
+			}
+		case <-timeout:
+			log.Fatal("❌ TEST FAILED: Timed out waiting for ElectionResult")
+		}
+	}
+}
+"""
+
 # --- FINAL JOB DEFINITION ---
 job = {
     "JobUID": str(uuid.uuid4()),
     "ProblemId": 1,
     "Nodes": [
         {
-            "Files": {
+            "Alias": "Student",
+			"Files": {
                 "exercises/mutex/protocol.go": protocol,
                 "student/solution.go": solution
             },
             "Envs": [],
-			"BuildCommand": "go build -o student/solution ./student",
-			"EntryCommand": "/app/tmp/student/solution -id N1 -addr controller:50051"
-        }
+			"BuildCommand": "go build -o prog ./student/solution.go",
+			"EntryCommand": "sleep 5 && ./prog -id N1 -addr controller:50051"
+		},
+		{
+            "Alias": "Test",
+			"Files": {
+                "exercises/mutex/protocol.go": protocol,
+                "test/test.go": test
+            },
+            "Envs": [],
+			"BuildCommand": "go build -o prog ./test/test.go",
+			"EntryCommand": "./prog"
+		}
     ],
     "UserId": "1",
-    "Timeout": 300
+    "Timeout": 60
 }
 
 
