@@ -3,9 +3,9 @@ package worker
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
@@ -36,30 +36,29 @@ func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers [
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create network %s: %w", networkName, err)
 	}
-	log.Printf("Created network %s", networkName)
+	log.Logger.Tracef("Created network %s", networkName)
 
-	for i, worker := range workers {
-		alias := fmt.Sprintf("worker-%d", i)
-		if err := worker.ConnectToNetwork(ctx, networkName, alias); err != nil {
-			log.Printf("Failed to connect worker %s to network %s: %v", worker.ID(), networkName, err)
+	for _, worker := range workers {
+		if err := worker.ConnectToNetwork(ctx, networkName, worker.Alias()); err != nil {
+			log.Logger.Warnf("Failed to connect worker %s to network %s: %v", worker.ID(), networkName, err)
 			_ = dnm.dockerCli.NetworkRemove(ctx, networkName)
 			return nil, "", err
 		}
 	}
 
 	cleanup := func() {
-		log.Printf("Cleaning up network %s", networkName)
+		log.Logger.Tracef("Cleaning up network %s", networkName)
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		for _, worker := range workers {
 			if err := worker.DisconnectFromNetwork(cleanupCtx, networkName); err != nil {
-				log.Printf("Error during worker network disconnect: %v", err)
+				log.Logger.Warnf("Error during worker network disconnect: %v", err)
 			}
 		}
 
 		if err := dnm.dockerCli.NetworkRemove(cleanupCtx, networkName); err != nil {
-			log.Printf("Error removing network %s: %v", networkName, err)
+			log.Logger.Warnf("Error removing network %s: %v", networkName, err)
 		}
 
 	}

@@ -14,15 +14,18 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/sirupsen/logrus"
 )
 
 type Worker struct {
+	alias       string
 	containerID string
 	dockerCli   *client.Client
 }
 
 type WorkerInterface interface {
 	ID() string
+	Alias() string
 	ConnectToNetwork(ctx context.Context, networkName, alias string) error
 	DisconnectFromNetwork(ctx context.Context, networkName string) error
 	Stop(ctx context.Context) error
@@ -33,6 +36,11 @@ var _ WorkerInterface = (*Worker)(nil)
 
 func (w *Worker) ID() string {
 	return w.containerID
+}
+
+// Alias returns the alias of the worker.
+func (w *Worker) Alias() string {
+	return w.alias
 }
 
 func (w *Worker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
@@ -71,6 +79,7 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 
 	containerConfig := &container.Config{
 		Image:      workerImageName,
+		Cmd:        []string{"sleep", "infinity"},
 		Env:        envVars,
 		Tty:        false,
 		WorkingDir: "/app/tmp",
@@ -106,6 +115,7 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 	w := &Worker{
 		containerID: resp.ID,
 		dockerCli:   cli,
+		alias:       spec.Alias,
 	}
 
 	tarStream, err := createTarStream(spec.Files)
@@ -119,7 +129,13 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 		return nil, fmt.Errorf("failed to copy spec files to container: %w", err)
 	}
 
-	log.Logger.Infof("Starting container %s...", resp.ID[:12])
+	log.Logger.WithFields(
+		logrus.Fields{
+			"alias":        spec.Alias,
+			"container_id": resp.ID[:12],
+		},
+	).Info("Creating worker container")
+
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to start container: %w", err)

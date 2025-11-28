@@ -35,9 +35,32 @@ job = {
             "Envs": [],
             "BuildCommand": "go build -o solution ./main.go",
             "EntryCommand": """
-            ./wrapper -cmd ./solution & sleep 5 && wget -qO- http://A:8090/start && sleep 5 && wget -qO- http://A:8090/shutdown
+            ./wrapper -cmd ./solution
             """
         },
+        {
+            "Alias": "B",
+            "Files": {
+                "main.go": """
+               package main
+
+import (
+	"context"
+
+	"github.com/distcodep7/dsnet/testing/wrapper"
+)
+
+func main() {
+	w := wrapper.NewWrapperManager(8090, "A")
+	w.StartAll(context.Background())
+	w.ShutdownAll(context.Background())
+}
+                """
+            },
+            "Envs": [],
+            "BuildCommand": "go build -o solution ./main.go",
+            "EntryCommand": "./solution"
+        }
     ],
     "UserId": "1",
     "Timeout": 60,

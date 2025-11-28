@@ -6,11 +6,12 @@ import (
 	"sync"
 
 	t "github.com/DistCodeP7/distcode_worker/types"
+	"github.com/google/uuid"
 )
 
 type WorkerManager struct {
 	maxWorkers     int
-	jobs           map[int][]WorkerInterface
+	jobs           map[string][]WorkerInterface
 	mu             sync.RWMutex
 	workerProducer WorkerProducer
 }
@@ -18,14 +19,14 @@ type WorkerManager struct {
 func NewWorkerManager(maxWorkers int, workerFactory WorkerProducer) (*WorkerManager, error) {
 	manager := &WorkerManager{
 		maxWorkers:     maxWorkers,
-		jobs:           make(map[int][]WorkerInterface),
+		jobs:           make(map[string][]WorkerInterface),
 		workerProducer: workerFactory,
 	}
 
 	return manager, nil
 }
 
-func (wm *WorkerManager) ReserveWorkers(jobID int, specs []t.NodeSpec) ([]WorkerInterface, error) {
+func (wm *WorkerManager) ReserveWorkers(jobID uuid.UUID, specs []t.NodeSpec) ([]WorkerInterface, error) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -45,7 +46,7 @@ func (wm *WorkerManager) ReserveWorkers(jobID int, specs []t.NodeSpec) ([]Worker
 		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobID, err)
 	}
 
-	wm.jobs[jobID] = workers
+	wm.jobs[jobID.String()] = workers
 
 	return workers, nil
 }
@@ -92,14 +93,14 @@ func (wm *WorkerManager) Shutdown() error {
 	return nil
 }
 
-func (wm *WorkerManager) ReleaseJob(jobID int) error {
+func (wm *WorkerManager) ReleaseJob(jobID uuid.UUID) error {
 	wm.mu.Lock()
-	reservedWorkers, ok := wm.jobs[jobID]
+	reservedWorkers, ok := wm.jobs[jobID.String()]
 	if !ok {
 		return fmt.Errorf("jobId %d not found", jobID)
 	}
 
-	delete(wm.jobs, jobID)
+	delete(wm.jobs, jobID.String())
 	wm.mu.Unlock()
 
 	if err := wm.removeWorkers(reservedWorkers); err != nil {

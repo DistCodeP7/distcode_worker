@@ -12,6 +12,7 @@ type EnvironmentVariable struct {
 type NodeSpec struct {
 	Files FileMap
 	Envs  []EnvironmentVariable
+	Alias string
 
 	// Could be "go build -o binary /tmp/hello/main.go /tmp/hello/utility.go"
 	BuildCommand string
