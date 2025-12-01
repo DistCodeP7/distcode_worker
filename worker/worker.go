@@ -55,7 +55,7 @@ func (w *Worker) DisconnectFromNetwork(ctx context.Context, networkName string) 
 
 // Stop stops and removes the container. Logs only container stop/removal events.
 func (w *Worker) Stop(ctx context.Context) error {
-	log.Logger.Infof("Stopping container %s", w.containerID[:12])
+	log.Logger.Tracef("Stopping container %s", w.containerID[:12])
 
 	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: nil}); err != nil {
 		log.Logger.Warnf("Failed to gracefully stop container %s: %v", w.containerID[:12], err)
