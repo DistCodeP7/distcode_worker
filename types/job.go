@@ -7,10 +7,10 @@ import (
 )
 
 type JobRequest struct {
-	JobUID  string           `json:"JobUID"`
-	Nodes   ContainerConfigs `json:"Nodes"`
-	UserId  string           `json:"UserId"`
-	Timeout int              `json:"Timeout"`
+	JobUID  string           `json:"jobUid"`
+	Nodes   ContainerConfigs `json:"nodes"`
+	UserId  string           `json:"userId"`
+	Timeout int              `json:"timeout"`
 }
 
 type ContainerConfigs struct {

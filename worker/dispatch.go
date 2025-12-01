@@ -144,7 +144,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	}()
 
 	// 1) Compile step: ensure each container compiles before running anything
-	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, workers, job.Nodes)
+	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, workers, job.Nodes, job)
 	// Send compiled event regardless of success/failure
 	d.sendJobEvents(job, types.CompiledEvent{
 		Success:        compiledSuccess,
@@ -219,7 +219,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 
 // compileAll runs build command on each worker sequentially (or concurrently if you prefer).
 // It buffers build output per worker and returns on the first build failure.
-func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterface, specs []types.NodeSpec) (bool, string, error) {
+func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterface, specs []types.NodeSpec, job types.Job) (bool, string, error) {
 	var wg sync.WaitGroup
 	type buildResult struct {
 		workerID string
@@ -228,54 +228,50 @@ func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterfac
 	}
 	results := make(chan buildResult, len(workers))
 
-	// Run builds concurrently but short-circuit on first failure detection.
 	for i := range workers {
 		wg.Add(1)
 		go func(worker WorkerInterface, spec types.NodeSpec) {
 			defer wg.Done()
 			var buf bytes.Buffer
 			workerID := worker.ID()
+
 			if spec.BuildCommand == "" {
-				// no build required -> success
+				// No build needed
 				results <- buildResult{workerID: workerID, out: "", err: nil}
 				return
 			}
-			log.Logger.Infof("Building on worker %s: %s", workerID[:12], spec.BuildCommand)
+
+			buf.WriteString(fmt.Sprintf("[Build] Running: %s\n", spec.BuildCommand))
 			err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
 				Cmd:          spec.BuildCommand,
 				OutputWriter: &buf,
 			})
-			if err != nil {
-				results <- buildResult{workerID: workerID, out: buf.String(), err: err}
-				return
-			}
-			results <- buildResult{workerID: workerID, out: buf.String(), err: nil}
+
+			// Send buffered build logs immediately for debugging
+			d.sendJobEvents(job, types.LogEvent{
+				WorkerID: workerID,
+				Message:  buf.String(),
+			})
+
+			results <- buildResult{workerID: workerID, out: buf.String(), err: err}
 		}(workers[i], specs[i])
 	}
 
-	// wait for all goroutines to finish or until context cancelled
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// collect results; fail fast: pick first non-nil error as failure
 	var firstErr error
 	var failedWorker string
-	var aggregatedBuildLogs bytes.Buffer
 	for r := range results {
-		aggregatedBuildLogs.WriteString(fmt.Sprintf("--- Worker %s build output ---\n%s\n", r.workerID[:12], r.out))
 		if r.err != nil && firstErr == nil {
 			firstErr = r.err
 			failedWorker = r.workerID
-			// do not return immediately; still drain channel to keep goroutines clean
 		}
 	}
 
-	if firstErr != nil {
-		return false, failedWorker, firstErr
-	}
-	return true, "", nil
+	return firstErr == nil, failedWorker, firstErr
 }
 
 // executeAll runs all workers' entry commands concurrently, buffers logs per worker,

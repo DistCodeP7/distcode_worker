@@ -16,31 +16,45 @@ except Exception as e:
     exit(1)
 
 job = {
-    "JobUID": str(uuid.uuid4()),
-    "ProblemId": 1,
-    "Nodes": [
-        {
-            "Alias": "A",
-            "Files": {
+    "jobUid": str(uuid.uuid4()),
+    "userId": "1",
+    "timeout": 60,
+    "nodes": {
+        "testContainer": {
+            "alias": "test",
+            "testFiles": {
                 "main.go": """
-                package main
-
-                import "fmt"
-
-                func main(){
-                    fmt.Println("HELLO WORLD")
-                }
-                """
+package main
+import "fmt"
+func main() {
+    fmt.Println("HELLO FROM TEST")
+}
+"""
             },
-            "Envs": [],
-            "BuildCommand": "go build -o solution ./main.go",
-            "EntryCommand": """
-            ./wrapper -cmd ./solution & sleep 5 && wget -qO- http://A:8090/start && sleep 5 && wget -qO- http://A:8090/shutdown
-            """
+            "buildCommand": "go build -o testbin ./main.go",
+            "entryCommand": "./testbin",
+            "envs": []
         },
-    ],
-    "UserId": "1",
-    "Timeout": 60,
+        "submission": {
+            "submissionCode": {
+                "main.go": """package main
+import "fmt"
+func main() {
+    fmt.Println("HELLO FROM SUBMISSION")
+}
+"""
+            },
+            "buildCommand": "go build -o solution ./main.go",
+            "entryCommand": "./solution",
+            "globalEnvs": [],
+            "replicaConfigs": [
+                {
+                    "alias": "replica1",
+                    "replicaEnvs": []
+                }
+            ]
+        }
+    }
 }
 
 body = json.dumps(job)
@@ -50,5 +64,6 @@ channel.basic_publish(
     body=body,
     properties=pika.BasicProperties(delivery_mode=2),
 )
-print("JobSpec inserted into queue.")
+
+print("JobRequest inserted into queue.")
 connection.close()

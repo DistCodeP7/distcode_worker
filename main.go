@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	log.Init(l.DebugLevel, true)
+	log.Init(l.TraceLevel, true)
 	// Parse command line flags
 	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 	log.Logger.WithFields(l.Fields{
