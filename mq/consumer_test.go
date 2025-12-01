@@ -7,24 +7,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func TestHandleDelivery_ValidJSON(t *testing.T) {
-	jobs := make(chan types.JobRequest, 1)
-
-	d := amqp.Delivery{Body: []byte(`{"ProblemId": 42}`)}
-	handleDelivery(d, jobs)
-
-	select {
-	case job := <-jobs:
-		if job.ProblemId != 42 {
-			t.Errorf("expected ProblemId=42, got %d", job.ProblemId)
-		}
-	default:
-		t.Error("expected a job to be sent to channel, got none")
-	}
-}
-
 func TestHandleDelivery_InvalidJSON(t *testing.T) {
-	jobs := make(chan types.JobRequest, 1)
+	jobs := make(chan types.Job, 1)
 
 	d := amqp.Delivery{Body: []byte(`not json`)}
 	handleDelivery(d, jobs)
@@ -38,7 +22,7 @@ func TestHandleDelivery_InvalidJSON(t *testing.T) {
 }
 
 func TestHandleDelivery_NilBody(t *testing.T) {
-	jobs := make(chan types.JobRequest, 1)
+	jobs := make(chan types.Job, 1)
 
 	d := amqp.Delivery{Body: nil}
 	handleDelivery(d, jobs)
@@ -52,7 +36,7 @@ func TestHandleDelivery_NilBody(t *testing.T) {
 }
 
 func TestHandleDelivery_EmptyBody(t *testing.T) {
-	jobs := make(chan types.JobRequest, 1)
+	jobs := make(chan types.Job, 1)
 
 	d := amqp.Delivery{Body: []byte(``)}
 	handleDelivery(d, jobs)

@@ -28,7 +28,7 @@ func main() {
 	defer appResources.Cancel()
 	defer appResources.DockerCli.Close()
 
-	jobsCh := make(chan types.JobRequest, jobsCapacity)
+	jobsCh := make(chan types.Job, jobsCapacity)
 	resultsCh := make(chan types.StreamingJobEvent, jobsCapacity)
 	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
 

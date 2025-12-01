@@ -37,7 +37,7 @@ type JobCancellation struct {
 // JobDispatcher orchestrates job execution across workers
 type JobDispatcher struct {
 	cancelJobChan    <-chan types.CancelJobRequest
-	jobChannel       <-chan types.JobRequest
+	jobChannel       <-chan types.Job
 	resultsChannel   chan<- types.StreamingJobEvent
 	workerManager    WorkerManagerInterface
 	networkManager   NetworkManagerInterface
@@ -50,7 +50,7 @@ type JobDispatcher struct {
 
 func NewJobDispatcher(
 	cancelJobChan <-chan types.CancelJobRequest,
-	jobChannel <-chan types.JobRequest,
+	jobChannel <-chan types.Job,
 	resultsChannel chan<- types.StreamingJobEvent,
 	workerManager WorkerManagerInterface,
 	networkManager NetworkManagerInterface,
@@ -106,7 +106,7 @@ func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 }
 
 // helper to send events in one StreamingJobEvent
-func (d *JobDispatcher) sendJobEvents(job types.JobRequest, events ...types.StreamingEvent) {
+func (d *JobDispatcher) sendJobEvents(job types.Job, events ...types.StreamingEvent) {
 	d.resultsChannel <- types.StreamingJobEvent{
 		JobUID: job.JobUID,
 		UserId: job.UserId,
@@ -115,7 +115,7 @@ func (d *JobDispatcher) sendJobEvents(job types.JobRequest, events ...types.Stre
 }
 
 // processJob is the top-level orchestration: compile all, send compiled event, then execute and stream logs
-func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
+func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
 	d.metricsCollector.IncJobTotal()
 
@@ -280,7 +280,7 @@ func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterfac
 
 // executeAll runs all workers' entry commands concurrently, buffers logs per worker,
 // and sends job-level LogEvent containing buffered logs per worker when each worker finishes.
-func (d *JobDispatcher) executeAll(ctx context.Context, job types.JobRequest, workers []WorkerInterface, specs []types.NodeSpec, jc *JobCancellation) error {
+func (d *JobDispatcher) executeAll(ctx context.Context, job types.Job, workers []WorkerInterface, specs []types.NodeSpec, jc *JobCancellation) error {
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(workers))
 
@@ -336,7 +336,7 @@ func (d *JobDispatcher) executeAll(ctx context.Context, job types.JobRequest, wo
 }
 
 // Reserve workers with retry
-func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.JobRequest) ([]WorkerInterface, error) {
+func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) ([]WorkerInterface, error) {
 	for {
 		workers, err := d.workerManager.ReserveWorkers(job.JobUID, job.Nodes)
 		if err == nil {
@@ -353,7 +353,7 @@ func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.JobRequest
 }
 
 // Create a per-job context with timeout and register JobControl
-func (d *JobDispatcher) createJobContext(ctx context.Context, job types.JobRequest) (context.Context, *JobCancellation) {
+func (d *JobDispatcher) createJobContext(ctx context.Context, job types.Job) (context.Context, *JobCancellation) {
 	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.Timeout)*time.Second)
 	jc := &JobCancellation{Cancel: cancel}
 
@@ -380,7 +380,7 @@ func (d *JobDispatcher) cleanupJob(jobUID uuid.UUID) {
 }
 
 // sendFinalStatus is a convenience for immediate final job events outside the normal flow
-func (d *JobDispatcher) sendFinalStatus(job types.JobRequest, status types.JobStatus, msg string, failedWorker string) {
+func (d *JobDispatcher) sendFinalStatus(job types.Job, status types.JobStatus, msg string, failedWorker string) {
 	d.sendJobEvents(job, types.StatusEvent{
 		Status:         status,
 		Message:        msg,
