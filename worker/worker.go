@@ -2,13 +2,17 @@
 package worker
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/DistCodeP7/distcode_worker/log"
 	t "github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/utils"
+	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -30,6 +34,7 @@ type WorkerInterface interface {
 	DisconnectFromNetwork(ctx context.Context, networkName string) error
 	Stop(ctx context.Context) error
 	ExecuteCommand(ctx context.Context, options ExecuteCommandOptions) error
+	ReadTestResults(ctx context.Context, path string) ([]disttest.TestResult, error)
 }
 
 var _ WorkerInterface = (*Worker)(nil)
@@ -209,4 +214,30 @@ func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) er
 	}
 
 	return nil
+}
+
+func (w *Worker) ReadTestResults(ctx context.Context, path string) ([]disttest.TestResult, error) {
+	reader, _, err := w.dockerCli.CopyFromContainer(ctx, w.containerID, path)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	tr := tar.NewReader(reader)
+	_, err = tr.Next() // move to first file in tar
+	if err != nil {
+		return nil, err
+	}
+
+	buf := new(bytes.Buffer)
+	if _, err := io.Copy(buf, tr); err != nil {
+		return nil, err
+	}
+
+	var results []disttest.TestResult
+	if err := json.Unmarshal(buf.Bytes(), &results); err != nil {
+		return nil, err
+	}
+
+	return results, nil
 }
