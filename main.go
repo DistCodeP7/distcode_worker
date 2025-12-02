@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	log.Init(l.DebugLevel, true)
+	log.Init(l.TraceLevel, true)
 	// Parse command line flags
 	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 	log.Logger.WithFields(l.Fields{
@@ -28,7 +28,7 @@ func main() {
 	defer appResources.Cancel()
 	defer appResources.DockerCli.Close()
 
-	jobsCh := make(chan types.JobRequest, jobsCapacity)
+	jobsCh := make(chan types.Job, jobsCapacity)
 	resultsCh := make(chan types.StreamingJobEvent, jobsCapacity)
 	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
 

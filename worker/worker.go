@@ -55,9 +55,10 @@ func (w *Worker) DisconnectFromNetwork(ctx context.Context, networkName string) 
 
 // Stop stops and removes the container. Logs only container stop/removal events.
 func (w *Worker) Stop(ctx context.Context) error {
-	log.Logger.Infof("Stopping container %s", w.containerID[:12])
+	log.Logger.Tracef("Stopping container %s", w.containerID[:12])
 
-	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: nil}); err != nil {
+	timeout := 3
+	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: &timeout}); err != nil {
 		log.Logger.Warnf("Failed to gracefully stop container %s: %v", w.containerID[:12], err)
 	}
 
@@ -95,7 +96,7 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 		},
 		Resources: container.Resources{
 			CPUShares:      512,
-			NanoCPUs:       500_000_000,
+			NanoCPUs:       1_000_000_000,
 			Memory:         512 * 1024 * 1024,
 			MemorySwap:     1024 * 1024 * 1024,
 			PidsLimit:      utils.PtrInt64(1024),
@@ -118,13 +119,20 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 		alias:       spec.Alias,
 	}
 
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		_ = w.Stop(ctx)
+		return nil, fmt.Errorf("failed to start container: %w", err)
+	}
+
 	tarStream, err := createTarStream(spec.Files)
 	if err != nil {
 		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to create tar stream: %w", err)
 	}
 
-	if err := cli.CopyToContainer(ctx, w.ID(), "/app/tmp", tarStream, container.CopyToContainerOptions{}); err != nil {
+	if err := cli.CopyToContainer(ctx, w.ID(), "/app/tmp", tarStream, container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: true,
+	}); err != nil {
 		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to copy spec files to container: %w", err)
 	}
@@ -135,11 +143,6 @@ func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, 
 			"container_id": resp.ID[:12],
 		},
 	).Info("Creating worker container")
-
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		_ = w.Stop(ctx)
-		return nil, fmt.Errorf("failed to start container: %w", err)
-	}
 
 	log.Logger.Infof("Worker initialized with container %s", w.containerID[:12])
 	return w, nil
@@ -161,6 +164,7 @@ func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) er
 
 	execConfig := container.ExecOptions{
 		Cmd:          []string{"/bin/sh", "-c", e.Cmd},
+		WorkingDir:   "/app/tmp",
 		AttachStdout: true,
 		AttachStderr: true,
 		Env:          execEnvStrings,

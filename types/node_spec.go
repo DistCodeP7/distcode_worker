@@ -4,9 +4,10 @@ package types
 type Path string
 type SourceCode string
 type FileMap map[Path]SourceCode
+
 type EnvironmentVariable struct {
-	Key   string
-	Value string
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 type NodeSpec struct {

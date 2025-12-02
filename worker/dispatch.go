@@ -14,12 +14,6 @@ import (
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
-	"github.com/sirupsen/logrus"
-)
-
-const (
-	EventLog    = "log"
-	EventStatus = "status"
 )
 
 // WorkerManagerInterface manages worker reservation and lifecycle
@@ -43,7 +37,7 @@ type JobCancellation struct {
 // JobDispatcher orchestrates job execution across workers
 type JobDispatcher struct {
 	cancelJobChan    <-chan types.CancelJobRequest
-	jobChannel       <-chan types.JobRequest
+	jobChannel       <-chan types.Job
 	resultsChannel   chan<- types.StreamingJobEvent
 	workerManager    WorkerManagerInterface
 	networkManager   NetworkManagerInterface
@@ -56,7 +50,7 @@ type JobDispatcher struct {
 
 func NewJobDispatcher(
 	cancelJobChan <-chan types.CancelJobRequest,
-	jobChannel <-chan types.JobRequest,
+	jobChannel <-chan types.Job,
 	resultsChannel chan<- types.StreamingJobEvent,
 	workerManager WorkerManagerInterface,
 	networkManager NetworkManagerInterface,
@@ -89,7 +83,7 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 		case job := <-d.jobChannel:
 			go d.processJob(ctx, job)
 		case cancelReq := <-d.cancelJobChan:
-			d.cancelJob(cancelReq)
+			go d.cancelJob(cancelReq)
 		}
 	}
 }
@@ -111,59 +105,266 @@ func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 	}
 }
 
-// sendJobResult sends final job result as two deterministic events: log + status
-func (d *JobDispatcher) sendJobResult(job types.JobRequest, aggregatedLogs string, status types.JobStatus, statusMsg string) {
-	//TDOO THIS IS SHIT BUT WE NEED TO FIGURE OUT WHAT WE WANT TO DO
-	events := []types.StreamingEvent{
-		{
-			Kind:     EventLog,
-			WorkerId: "",
-			Message:  aggregatedLogs,
-		},
-		{
-			Kind:     EventStatus,
-			WorkerId: "",
-			Status:   status,
-			Message:  statusMsg,
-		},
-	}
-
+// helper to send events in one StreamingJobEvent
+func (d *JobDispatcher) sendJobEvents(job types.Job, events ...types.StreamingEvent) {
 	d.resultsChannel <- types.StreamingJobEvent{
-		JobUID:        job.JobUID,
-		ProblemId:     job.ProblemId,
-		UserId:        job.UserId,
-		SequenceIndex: -1,
-		Events:        events,
+		JobUID: job.JobUID,
+		UserId: job.UserId,
+		Events: events,
 	}
 }
 
-func (d *JobDispatcher) processJob(ctx context.Context, job types.JobRequest) {
+// processJob is the top-level orchestration: compile all, send compiled event, then execute and stream logs
+func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
 	d.metricsCollector.IncJobTotal()
 
 	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
-		d.sendJobResult(job, "", types.StatusJobFailed, err.Error())
+		// immediate failure reserve workers
+		d.sendFinalStatus(job, types.StatusJobFailed, fmt.Sprintf("failed to reserve workers: %v", err), "")
 		return
 	}
 
 	jobCtx, jc := d.createJobContext(ctx, job)
-	defer d.cleanupJob(job.JobUID.String())
+	defer d.cleanupJob(job.JobUID)
 
 	startTime := d.clock.Now()
 
-	logs, jobErr := d.runWorkers(jobCtx, job, workers)
-	d.handleJobCompletion(jobCtx, job, jc, startTime, logs, jobErr)
+	// set up network once
+	cleanup, _, netErr := d.networkManager.CreateAndConnect(jobCtx, workers)
+	if netErr != nil {
+		d.sendFinalStatus(job, types.StatusJobFailed, fmt.Sprintf("failed to set up network: %v", netErr), "")
+		return
+	}
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
 
-	if err := d.workerManager.ReleaseJob(job.JobUID); err != nil {
-		log.Logger.Errorf("Error releasing job %s workers: %v", job.JobUID.String(), err)
+	// 1) Compile step: ensure each container compiles before running anything
+	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, workers, job.Nodes, job)
+	// Send compiled event regardless of success/failure
+	d.sendJobEvents(job, types.CompiledEvent{
+		Success:        compiledSuccess,
+		FailedWorkerID: failedWorker,
+		Error: func() string {
+			if compileErr != nil {
+				return compileErr.Error()
+			}
+			return ""
+		}(),
+	})
+
+	if !compiledSuccess {
+		// short-circuit on compilation failure and send final status
+		d.metricsCollector.IncJobFailure()
+		duration := d.clock.Since(startTime).Milliseconds()
+		d.sendJobEvents(job, types.StatusEvent{
+			Status:         types.StatusJobCompilationError,
+			Message:        "compilation failed",
+			DurationMillis: duration,
+			FailedWorkerID: failedWorker,
+		})
+		return
 	}
 
-	log.Logger.Infof("Finished job %s", job.JobUID.String())
+	// 2) Execution step: run all containers concurrently, buffer logs per worker and send job-level log events (buffered)
+	execErr := d.executeAll(jobCtx, job, workers, job.Nodes, jc)
+
+	// 3) Final status
+	if jc != nil && jc.CanceledByUser.Load() {
+		d.metricsCollector.IncJobCanceled()
+		duration := d.clock.Since(startTime).Milliseconds()
+		d.sendJobEvents(job, types.StatusEvent{
+			Status:         types.StatusJobCanceled,
+			Message:        "job canceled by user",
+			DurationMillis: duration,
+		})
+		return
+	}
+
+	if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+		d.metricsCollector.IncJobTimeout()
+		duration := d.clock.Since(startTime).Milliseconds()
+		d.sendJobEvents(job, types.StatusEvent{
+			Status:         types.StatusJobTimeout,
+			Message:        fmt.Sprintf("job timed out after %ds", job.Timeout),
+			DurationMillis: duration,
+		})
+		return
+	}
+
+	if execErr != nil {
+		d.metricsCollector.IncJobFailure()
+		duration := d.clock.Since(startTime).Milliseconds()
+		// if execErr is a BuildError we would have already short-circuited; treat other errors as job failure
+		d.sendJobEvents(job, types.StatusEvent{
+			Status:         types.StatusJobFailed,
+			Message:        execErr.Error(),
+			DurationMillis: duration,
+		})
+		return
+	}
+
+	d.metricsCollector.IncJobSuccess()
+	duration := d.clock.Since(startTime).Milliseconds()
+	d.sendJobEvents(job, types.StatusEvent{
+		Status:         types.StatusJobSuccess,
+		Message:        "completed successfully",
+		DurationMillis: duration,
+	})
+}
+
+// compileAll runs build command on each worker sequentially (or concurrently if you prefer).
+// It buffers build output per worker and returns on the first build failure.
+func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterface, specs []types.NodeSpec, job types.Job) (bool, string, error) {
+	// Map workers by alias so we don't rely on slice ordering
+	workerByAlias := make(map[string]WorkerInterface, len(workers))
+	for _, w := range workers {
+		workerByAlias[w.Alias()] = w
+	}
+
+	var wg sync.WaitGroup
+	type buildResult struct {
+		workerID string
+		out      string
+		err      error
+	}
+	results := make(chan buildResult, len(specs))
+
+	for _, spec := range specs {
+		// Find matching worker for this spec by alias
+		worker, ok := workerByAlias[spec.Alias]
+		if !ok {
+			// No worker for this alias – treat as an immediate failure
+			results <- buildResult{
+				workerID: spec.Alias,
+				out:      "",
+				err:      fmt.Errorf("no worker found for alias %s", spec.Alias),
+			}
+			continue
+		}
+
+		wg.Add(1)
+		go func(worker WorkerInterface, spec types.NodeSpec) {
+			defer wg.Done()
+
+			var buf bytes.Buffer
+			workerID := worker.ID()
+
+			if spec.BuildCommand == "" {
+				// No build needed
+				results <- buildResult{workerID: workerID, out: "", err: nil}
+				return
+			}
+
+			buf.WriteString(fmt.Sprintf("[Build] Running: %s\n", spec.BuildCommand))
+			err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
+				Cmd:          spec.BuildCommand,
+				OutputWriter: &buf,
+			})
+
+			// Send buffered build logs immediately for debugging
+			d.sendJobEvents(job, types.LogEvent{
+				WorkerID: workerID,
+				Message:  buf.String(),
+			})
+
+			results <- buildResult{workerID: workerID, out: buf.String(), err: err}
+		}(worker, spec)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var firstErr error
+	var failedWorker string
+	for r := range results {
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
+			failedWorker = r.workerID
+		}
+	}
+
+	return firstErr == nil, failedWorker, firstErr
+}
+
+// executeAll runs all workers' entry commands concurrently, buffers logs per worker,
+// and sends job-level LogEvent containing buffered logs per worker when each worker finishes.
+func (d *JobDispatcher) executeAll(ctx context.Context, job types.Job, workers []WorkerInterface, specs []types.NodeSpec, jc *JobCancellation) error {
+	// Map workers by alias so we don't rely on slice ordering
+	workerByAlias := make(map[string]WorkerInterface, len(workers))
+	for _, w := range workers {
+		workerByAlias[w.Alias()] = w
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(specs))
+
+	for _, spec := range specs {
+		worker, ok := workerByAlias[spec.Alias]
+		if !ok {
+			errCh <- fmt.Errorf("no worker found for alias %s", spec.Alias)
+			continue
+		}
+
+		wg.Add(1)
+		go func(worker WorkerInterface, spec types.NodeSpec) {
+			defer wg.Done()
+
+			var buf bytes.Buffer
+			workerID := worker.ID()
+
+			log.Logger.Infof("Executing on worker %s: %s", workerID[:12], spec.EntryCommand)
+			buf.WriteString(fmt.Sprintf("[Execute] Running: %s\n", spec.EntryCommand))
+
+			err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
+				Cmd:          spec.EntryCommand,
+				OutputWriter: &buf,
+			})
+			if err != nil {
+				buf.WriteString(fmt.Sprintf("[Execute ERROR] %v\n", err))
+				// send buffered logs for this worker before propagating the error
+				d.sendJobEvents(job, types.LogEvent{
+					WorkerID: workerID,
+					Message:  buf.String(),
+				})
+				errCh <- fmt.Errorf("execution failed on worker %s: %w", workerID[:12], err)
+				// ensure we cancel the job context so other workers stop
+				if jc != nil && jc.Cancel != nil {
+					jc.Cancel()
+				}
+				return
+			}
+
+			buf.WriteString("[Execute Success]\n")
+			// send buffered logs for this worker as a single job-level log event
+			d.sendJobEvents(job, types.LogEvent{
+				WorkerID: workerID,
+				Message:  buf.String(),
+			})
+		}(worker, spec)
+	}
+
+	// wait and collect errors
+	wg.Wait()
+	close(errCh)
+
+	// if any error occurred return the first one
+	for e := range errCh {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // Reserve workers with retry
-func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.JobRequest) ([]WorkerInterface, error) {
+func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) ([]WorkerInterface, error) {
 	for {
 		workers, err := d.workerManager.ReserveWorkers(job.JobUID, job.Nodes)
 		if err == nil {
@@ -180,7 +381,7 @@ func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.JobRequest
 }
 
 // Create a per-job context with timeout and register JobControl
-func (d *JobDispatcher) createJobContext(ctx context.Context, job types.JobRequest) (context.Context, *JobCancellation) {
+func (d *JobDispatcher) createJobContext(ctx context.Context, job types.Job) (context.Context, *JobCancellation) {
 	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.Timeout)*time.Second)
 	jc := &JobCancellation{Cancel: cancel}
 
@@ -191,137 +392,27 @@ func (d *JobDispatcher) createJobContext(ctx context.Context, job types.JobReque
 	return jobCtx, jc
 }
 
-// Cleanup job entry from activeJobs and cancel context if still present
-func (d *JobDispatcher) cleanupJob(jobUID string) {
+func (d *JobDispatcher) cleanupJob(jobUID uuid.UUID) {
 	d.mu.Lock()
-	jc, ok := d.activeJobs[jobUID]
+	jc, ok := d.activeJobs[jobUID.String()]
 	if ok {
-		// ensure cancel called and remove entry
 		if jc.Cancel != nil {
 			jc.Cancel()
 		}
-		delete(d.activeJobs, jobUID)
+		delete(d.activeJobs, jobUID.String())
 	}
 	d.mu.Unlock()
+	if err := d.workerManager.ReleaseJob(jobUID); err != nil {
+		log.Logger.Errorf("Failed to release workers for job %s: %v", jobUID, err)
+	}
 }
 
-// Run all workers for a job and collect logs
-func (d *JobDispatcher) runWorkers(ctx context.Context, job types.JobRequest, workers []WorkerInterface) (string, error) {
-	var wg sync.WaitGroup
-	var logs bytes.Buffer
-	var jobErr error
-	var mu sync.Mutex
-
-	cleanup, _, netErr := d.networkManager.CreateAndConnect(ctx, workers)
-	if netErr != nil {
-		return "", fmt.Errorf("failed to set up network: %w", netErr)
-	}
-	defer func() {
-		if cleanup != nil {
-			cleanup()
-		}
-	}()
-
-	for i, worker := range workers {
-		wg.Add(1)
-		go func(worker WorkerInterface, spec types.NodeSpec) {
-			defer wg.Done()
-			wLogs, err := d.runWorkerJob(ctx, worker, spec)
-
-			mu.Lock()
-			logs.WriteString(fmt.Sprintf("--- Worker %s ---\n%s", worker.ID()[:12], wLogs))
-			if err != nil {
-				jobErr = err
-				d.mu.Lock()
-				jc, ok := d.activeJobs[job.JobUID.String()]
-				d.mu.Unlock()
-				if ok && jc.Cancel != nil {
-					jc.Cancel()
-				}
-			}
-			mu.Unlock()
-		}(worker, job.Nodes[i])
-	}
-
-	wg.Wait()
-	return logs.String(), jobErr
-}
-
-type BuildError struct {
-	WorkerID string
-	Err      error
-}
-
-func (e *BuildError) Error() string {
-	return fmt.Sprintf("build error on worker %s: %v", e.WorkerID[:12], e.Err)
-}
-
-// Run build + execute for a single worker
-func (d *JobDispatcher) runWorkerJob(ctx context.Context, worker WorkerInterface, spec types.NodeSpec) (string, error) {
-	var logBuffer bytes.Buffer
-	workerID := worker.ID()
-
-	if spec.BuildCommand != "" {
-		log.Logger.Infof("Building code on worker %s: %s", workerID[:12], spec.BuildCommand)
-		logBuffer.WriteString(fmt.Sprintf("[Build] Running: %s", spec.BuildCommand))
-		if err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
-			Cmd:          spec.BuildCommand,
-			OutputWriter: &logBuffer,
-		}); err != nil {
-			logBuffer.WriteString(fmt.Sprintf("[Build ERROR] %v\n", err))
-			return logBuffer.String(), &BuildError{WorkerID: workerID, Err: err}
-		}
-		logBuffer.WriteString("[Build Success]\n")
-	}
-
-	log.Logger.Infof("Executing code on worker %s: %s", workerID[:12], spec.EntryCommand)
-	logBuffer.WriteString(fmt.Sprintf("[Execute] Running: %s	", spec.EntryCommand))
-	if err := worker.ExecuteCommand(ctx, ExecuteCommandOptions{
-		Cmd:          spec.EntryCommand,
-		OutputWriter: &logBuffer,
-	}); err != nil {
-		logBuffer.WriteString(fmt.Sprintf("[Execute ERROR] %v\n", err))
-		return logBuffer.String(), fmt.Errorf("execution failed on worker %s: %w", workerID[:12], err)
-	}
-	logBuffer.WriteString("[Execute Success]\n")
-
-	return logBuffer.String(), nil
-}
-
-// Handle job completion based on context or worker error
-func (d *JobDispatcher) handleJobCompletion(ctx context.Context, job types.JobRequest, jc *JobCancellation, startTime time.Time, aggregatedLogs string, workerError error) {
-	duration := d.clock.Since(startTime).Seconds()
-	d.metricsCollector.ObserveJobDuration(duration)
-	switch {
-	case jc != nil && jc.CanceledByUser.Load():
-		d.metricsCollector.IncJobCanceled()
-		log.Logger.Infof("Job %d canceled by user request", job.ProblemId)
-		d.sendJobResult(job, aggregatedLogs, types.StatusJobCanceled, "job canceled by user")
-
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		d.metricsCollector.IncJobTimeout()
-		log.Logger.Warnf("Job %d timed out after %ds", job.ProblemId, job.Timeout)
-		d.sendJobResult(job, aggregatedLogs, types.StatusJobTimeout, fmt.Sprintf("job timed out after %ds", job.Timeout))
-
-	case workerError != nil:
-		switch e := workerError.(type) {
-		case *BuildError:
-			d.metricsCollector.IncJobFailure()
-			log.Logger.WithFields(
-				logrus.Fields{
-					"job_id":    job.JobUID.String(),
-					"worker_id": e.WorkerID[:12],
-					"error":     e.Err,
-				}).Errorf("Failed build")
-			d.sendJobResult(job, aggregatedLogs, types.StatusJobCompilationError, fmt.Sprintf("build error on worker: %s", e.WorkerID[:12]))
-		default:
-			d.metricsCollector.IncJobFailure()
-			log.Logger.Errorf("Job %d failed due to worker error: %v", job.ProblemId, workerError)
-			d.sendJobResult(job, aggregatedLogs, types.StatusJobFailed, workerError.Error())
-		}
-
-	default:
-		d.sendJobResult(job, aggregatedLogs, types.StatusJobSuccess, "completed successfully")
-		d.metricsCollector.IncJobSuccess()
-	}
+// sendFinalStatus is a convenience for immediate final job events outside the normal flow
+func (d *JobDispatcher) sendFinalStatus(job types.Job, status types.JobStatus, msg string, failedWorker string) {
+	d.sendJobEvents(job, types.StatusEvent{
+		Status:         status,
+		Message:        msg,
+		DurationMillis: 0,
+		FailedWorkerID: failedWorker,
+	})
 }
