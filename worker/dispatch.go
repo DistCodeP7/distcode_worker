@@ -220,18 +220,37 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 // compileAll runs build command on each worker sequentially (or concurrently if you prefer).
 // It buffers build output per worker and returns on the first build failure.
 func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterface, specs []types.NodeSpec, job types.Job) (bool, string, error) {
+	// Map workers by alias so we don't rely on slice ordering
+	workerByAlias := make(map[string]WorkerInterface, len(workers))
+	for _, w := range workers {
+		workerByAlias[w.Alias()] = w
+	}
+
 	var wg sync.WaitGroup
 	type buildResult struct {
 		workerID string
 		out      string
 		err      error
 	}
-	results := make(chan buildResult, len(workers))
+	results := make(chan buildResult, len(specs))
 
-	for i := range workers {
+	for _, spec := range specs {
+		// Find matching worker for this spec by alias
+		worker, ok := workerByAlias[spec.Alias]
+		if !ok {
+			// No worker for this alias – treat as an immediate failure
+			results <- buildResult{
+				workerID: spec.Alias,
+				out:      "",
+				err:      fmt.Errorf("no worker found for alias %s", spec.Alias),
+			}
+			continue
+		}
+
 		wg.Add(1)
 		go func(worker WorkerInterface, spec types.NodeSpec) {
 			defer wg.Done()
+
 			var buf bytes.Buffer
 			workerID := worker.ID()
 
@@ -254,7 +273,7 @@ func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterfac
 			})
 
 			results <- buildResult{workerID: workerID, out: buf.String(), err: err}
-		}(workers[i], specs[i])
+		}(worker, spec)
 	}
 
 	go func() {
@@ -277,13 +296,26 @@ func (d *JobDispatcher) compileAll(ctx context.Context, workers []WorkerInterfac
 // executeAll runs all workers' entry commands concurrently, buffers logs per worker,
 // and sends job-level LogEvent containing buffered logs per worker when each worker finishes.
 func (d *JobDispatcher) executeAll(ctx context.Context, job types.Job, workers []WorkerInterface, specs []types.NodeSpec, jc *JobCancellation) error {
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(workers))
+	// Map workers by alias so we don't rely on slice ordering
+	workerByAlias := make(map[string]WorkerInterface, len(workers))
+	for _, w := range workers {
+		workerByAlias[w.Alias()] = w
+	}
 
-	for i := range workers {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(specs))
+
+	for _, spec := range specs {
+		worker, ok := workerByAlias[spec.Alias]
+		if !ok {
+			errCh <- fmt.Errorf("no worker found for alias %s", spec.Alias)
+			continue
+		}
+
 		wg.Add(1)
 		go func(worker WorkerInterface, spec types.NodeSpec) {
 			defer wg.Done()
+
 			var buf bytes.Buffer
 			workerID := worker.ID()
 
@@ -315,7 +347,7 @@ func (d *JobDispatcher) executeAll(ctx context.Context, job types.Job, workers [
 				WorkerID: workerID,
 				Message:  buf.String(),
 			})
-		}(workers[i], specs[i])
+		}(worker, spec)
 	}
 
 	// wait and collect errors
