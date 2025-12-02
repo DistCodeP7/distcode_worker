@@ -35,20 +35,15 @@ func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-c
 				select {
 				case event, ok := <-events:
 					if !ok {
-						// The incoming events channel was closed, gracefully exit the run function.
 						return nil
 					}
 
-					// 1. Marshal the event data
 					body, err := json.Marshal(event)
 					if err != nil {
-						// This is a local error (bad struct), log it and skip the message.
-						// Do not return an error to avoid unnecessary reconnecting.
 						log.Logger.WithError(err).Error("Marshal error for job event")
 						continue
 					}
 
-					// 2. Publish the message using the long-lived channel
 					err = ch.PublishWithContext(ctx,
 						"",        // exchange
 						queueName, // routing key
@@ -60,8 +55,6 @@ func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-c
 						})
 
 					if err != nil {
-						// This is a network error or channel error (like connection closed).
-						// Return the error to trigger the ReconnectorRabbitMQ loop to reconnect.
 						log.Logger.WithError(err).Error("Publish error, triggering reconnect")
 						return err
 					}
