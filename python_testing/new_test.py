@@ -50,7 +50,7 @@ func main() {
             "replicaConfigs": [
                 {
                     "alias": "replica1",
-                    "replicaEnvs": []
+                    "envs": []
                 }
             ]
         }
