@@ -11,7 +11,7 @@ import "flag"
 //	-w int: The number of worker goroutines to start (default 4).
 //	-c int: The capacity of the jobs channel (default 2 * workers).
 func ParseFlags() (string, int, int) {
-	workerImageName := flag.String("iw", "ghcr.io/distcodep7/dsnet:latest", "The Docker image to use for workers")
+	workerImageName := flag.String("i", "ghcr.io/distcodep7/dsnet:latest", "The Docker image to use for workers")
 	numWorkers := flag.Int("w", 4, "The number of worker goroutines to start")
 	jobsCapacityFlag := flag.Int("c", -1, "The capacity of the jobs channel (optional)")
 
