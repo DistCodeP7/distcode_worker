@@ -119,18 +119,17 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
 	d.metricsCollector.IncJobTotal()
 
+	log.Logger.Infof("Requesting %d workers for job %s", len(job.Nodes), job.JobUID.String())
 	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
-		// immediate failure reserve workers
+		log.Logger.Errorf("Failed to reserve workers for job %s: %v", job.JobUID.String(), err)
 		d.sendFinalStatus(job, types.StatusJobFailed, fmt.Sprintf("failed to reserve workers: %v", err), "")
 		return
 	}
-
 	jobCtx, jc := d.createJobContext(ctx, job)
 	defer d.cleanupJob(job.JobUID)
 
 	startTime := d.clock.Now()
-
 	// set up network once
 	cleanup, _, netErr := d.networkManager.CreateAndConnect(jobCtx, workers)
 	if netErr != nil {
@@ -142,7 +141,6 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 			cleanup()
 		}
 	}()
-
 	// 1) Compile step: ensure each container compiles before running anything
 	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, workers, job.Nodes, job)
 	// Send compiled event regardless of success/failure
@@ -365,10 +363,19 @@ func (d *JobDispatcher) executeAll(ctx context.Context, job types.Job, workers [
 
 // Reserve workers with retry
 func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) ([]WorkerInterface, error) {
+	var lastLogTime time.Time
+	logInterval := 5 * time.Second
+
 	for {
 		workers, err := d.workerManager.ReserveWorkers(job.JobUID, job.Nodes)
 		if err == nil {
 			return workers, nil
+		}
+
+		// Log periodically, not on every retry
+		if d.clock.Since(lastLogTime) > logInterval {
+			log.Logger.Warnf("Still waiting for workers for job %s: %v", job.JobUID.String(), err)
+			lastLogTime = d.clock.Now()
 		}
 
 		select {
