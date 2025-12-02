@@ -9,7 +9,6 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// Define the event types.
 type EventType string
 
 const (

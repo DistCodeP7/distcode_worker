@@ -17,9 +17,9 @@ func TestIncomingJobRequest_ToDomain(t *testing.T) {
 		Timeout: 30,
 		Nodes: types.ContainerConfigs{
 			TestContainer: types.TestContainerConfig{
-				Alias:        "test",
-				BuildCommand: "go test",
-				EntryCommand: "./test",
+				Alias:        "testing",
+				BuildCommand: "go testing",
+				EntryCommand: "./testing",
 				TestFiles: map[string]string{
 					"test.go": "package main",
 				},
@@ -70,9 +70,9 @@ func TestIncomingJobRequest_ToDomain(t *testing.T) {
 	}
 
 	testNode := job.Nodes[0]
-	if testNode.Alias != "test" ||
-		testNode.BuildCommand != "go test" ||
-		testNode.EntryCommand != "./test" {
+	if testNode.Alias != "testing" ||
+		testNode.BuildCommand != "go testing" ||
+		testNode.EntryCommand != "./testing" {
 		t.Error("test container incorrectly mapped")
 	}
 
