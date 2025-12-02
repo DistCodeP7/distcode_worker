@@ -130,7 +130,7 @@ func main() {
 	for {
 		if len(received) >= len(expected) {
 			log.Println("✅ TEST PASSED: All nodes completed critical section")
-			return
+			os.Exit(0)
 		}
 		select {
 		case event := <-tester.Inbound:
@@ -174,7 +174,11 @@ import (
 )
 
 
-type MutexNode struct{ Net *dsnet.Node; CoordinatorID string }
+type MutexNode struct{ 
+	Net *dsnet.Node
+	CoordinatorID string
+	done chan struct{}
+}
 
 // Centralized coordinator state
 type state struct {
@@ -199,7 +203,7 @@ func NewMutexNode(id string, coordinatorID string) *MutexNode {
 	if err != nil {
 		log.Fatalf("Failed to create node %s: %v", id, err)
 	}
-	return &MutexNode{Net: n, CoordinatorID: coordinatorID}
+	return &MutexNode{Net: n, CoordinatorID: coordinatorID, done: make(chan struct{})}
 }
 
 func (en *MutexNode) Run(ctx context.Context) {
@@ -228,6 +232,9 @@ func (en *MutexNode) Run(ctx context.Context) {
 		case event := <-en.Net.Inbound:
 			handleEvent(ctx, en, &st, event)
 		case <-ctx.Done():
+			return
+		case <-en.done:
+			log.Printf("Node %s shutting down gracefully", en.Net.ID)
 			return
 		}
 	}
@@ -296,6 +303,9 @@ func handleEvent(ctx context.Context, en *MutexNode, st *state, event dsnet.Even
 		if len(st.completed) >= len(st.allNodes)-1 {
 			res := ex.MutexResult{ BaseMessage: dsnet.BaseMessage{ From: en.Net.ID, To: "TESTER", Type: "MutexResult" }, MutexID: st.mutexID, NodeId: en.Net.ID, Success: true }
 			en.Net.Send(ctx, "TESTER", res)
+			log.Printf("Coordinator completed - all nodes finished")
+			time.Sleep(100 * time.Millisecond) // Brief delay to ensure message is sent
+			close(en.done)
 			return
 		}
 		grantNext(ctx, en, st)
@@ -336,6 +346,9 @@ func doClientCS(ctx context.Context, en *MutexNode, st *state) {
 	// Report completion to tester
 	res := ex.MutexResult{ BaseMessage: dsnet.BaseMessage{ From: en.Net.ID, To: "TESTER", Type: "MutexResult" }, MutexID: st.mutexID, NodeId: en.Net.ID, Success: true }
 	en.Net.Send(ctx, "TESTER", res)
+	log.Printf("Client %s completed - exiting", en.Net.ID)
+	time.Sleep(100 * time.Millisecond) // Brief delay to ensure message is sent
+	close(en.done)
 }
 
 func doCoordinatorCS(ctx context.Context, en *MutexNode, st *state) {

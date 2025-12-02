@@ -43,7 +43,7 @@ func (wm *WorkerManager) ReserveWorkers(jobID uuid.UUID, specs []t.NodeSpec) ([]
 
 	workers, err := wm.workerProducer.NewWorkers(context.TODO(), specs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobID, err)
+		return nil, fmt.Errorf("failed to create workers for job %s: %w", jobID, err)
 	}
 
 	wm.jobs[jobID.String()] = workers
@@ -97,14 +97,14 @@ func (wm *WorkerManager) ReleaseJob(jobID uuid.UUID) error {
 	wm.mu.Lock()
 	reservedWorkers, ok := wm.jobs[jobID.String()]
 	if !ok {
-		return fmt.Errorf("jobId %d not found", jobID)
+		return fmt.Errorf("jobId %s not found", jobID)
 	}
 
 	delete(wm.jobs, jobID.String())
 	wm.mu.Unlock()
 
 	if err := wm.removeWorkers(reservedWorkers); err != nil {
-		return fmt.Errorf("failed to release workers for job %d: %v", jobID, err)
+		return fmt.Errorf("failed to release workers for job %s: %v", jobID, err)
 	}
 
 	return nil
