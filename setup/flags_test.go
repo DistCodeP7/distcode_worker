@@ -28,7 +28,7 @@ func TestParseFlagsWithCustomValues(t *testing.T) {
 	// Save original os.Args and restore after test
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
-	os.Args = []string{"cmd", "-iw", "customworkerimage:latest", "-ic", "customcontrollerimage:latest", "-w", "10", "-c", "50"}
+	os.Args = []string{"cmd", "-i", "customworkerimage:latest", "-w", "10", "-c", "50"}
 
 	workerImage, workers, capacity := ParseFlags()
 

@@ -90,7 +90,16 @@ import (
 )
 
 func main() {
-	go controller.Serve()
+	cfg := controller.TestConfig{
+		DropProb:        0.2,
+		DupeProb:        0,
+		AsyncDuplicate:  true,
+		ReorderProb:     0,
+		ReorderMinDelay: 1,
+		ReorderMaxDelay: 1,
+    }
+    
+	go controller.Serve(cfg)
 	time.Sleep(2 * time.Second)
 
 	tester, err := dsnet.NewNode("TESTER", "localhost:50051")
@@ -126,7 +135,7 @@ func main() {
 		expected[peer] = true
 	}
 
-	timeout := time.After(30 * time.Second)
+	timeout := time.After(60 * time.Second)
 	for {
 		if len(received) >= len(expected) {
 			log.Println("✅ TEST PASSED: All nodes completed critical section")
@@ -196,6 +205,7 @@ type state struct {
 	queue         []string
 	completed     map[string]bool
 	allNodes      []string
+	requested     map[string]bool  // Track which nodes have sent RequestCS
 }
 
 func NewMutexNode(id string, coordinatorID string) *MutexNode {
@@ -225,6 +235,14 @@ func (en *MutexNode) Run(ctx context.Context) {
 		completed: map[string]bool{}, 
 		allNodes: []string{}, 
 		coordinatorID: coordinatorID,
+		requested: map[string]bool{},
+	}
+
+	// Retry ticker for coordinator to resend triggers
+	var retryTicker *time.Ticker
+	if isCoordinator {
+		retryTicker = time.NewTicker(2 * time.Second)
+		defer retryTicker.Stop()
 	}
 
 	for {
@@ -236,6 +254,27 @@ func (en *MutexNode) Run(ctx context.Context) {
 		case <-en.done:
 			log.Printf("Node %s shutting down gracefully", en.Net.ID)
 			return
+		case <-func() <-chan time.Time {
+			if retryTicker != nil {
+				return retryTicker.C
+			}
+			return nil
+		}():
+			// Coordinator: retry sending triggers to nodes that haven't requested yet
+			if st.started {
+				for _, nodeID := range st.allNodes {
+					if nodeID == en.Net.ID { continue }
+					if !st.requested[nodeID] && !st.completed[nodeID] {
+						log.Printf("Retrying MutexTrigger to %s (not yet requested)", nodeID)
+						t := ex.MutexTrigger{ 
+							BaseMessage: dsnet.BaseMessage{ From: en.Net.ID, To: nodeID, Type: "MutexTrigger" }, 
+							MutexID: st.mutexID, 
+							WorkMillis: st.workMillis,
+						}
+						en.Net.Send(ctx, nodeID, t)
+					}
+				}
+			}
 		}
 	}
 }
@@ -277,6 +316,8 @@ func handleEvent(ctx context.Context, en *MutexNode, st *state, event dsnet.Even
 		if !st.isCoordinator { return }
 		var req ex.RequestCS
 		if err := json.Unmarshal(event.Payload, &req); err != nil { return }
+		// Mark that this node has requested
+		st.requested[req.From] = true
 		handleCoordinatorRequest(ctx, en, st, req.From, req.MutexID)
 
 	case "ReplyCS":
