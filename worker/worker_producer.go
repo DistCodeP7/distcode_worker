@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/DistCodeP7/distcode_worker/dockercli"
 	t "github.com/DistCodeP7/distcode_worker/types"
-	"github.com/docker/docker/client"
 )
 
 type WorkerProducer interface {
@@ -14,13 +14,13 @@ type WorkerProducer interface {
 }
 
 type DockerWorkerProducer struct {
-	dockerCli       *client.Client
+	dockerCli       dockercli.Client
 	workerImageName string
 }
 
 var _ WorkerProducer = (*DockerWorkerProducer)(nil)
 
-func NewDockerWorkerProducer(dockerCli *client.Client, workerImageName string) *DockerWorkerProducer {
+func NewDockerWorkerProducer(dockerCli dockercli.Client, workerImageName string) *DockerWorkerProducer {
 	return &DockerWorkerProducer{
 		dockerCli:       dockerCli,
 		workerImageName: workerImageName,

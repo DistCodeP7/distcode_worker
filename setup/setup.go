@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/dockercli"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/client"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -22,7 +22,7 @@ import (
 type AppResources struct {
 	Ctx             context.Context
 	Cancel          context.CancelFunc
-	DockerCli       *client.Client
+	DockerCli       dockercli.Client
 	WorkerImage     string
 	ControllerImage string
 }
@@ -37,7 +37,7 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 	ctx, cancel := context.WithCancel(context.Background())
 	handleSignals(cancel)
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := dockercli.NewClientFromEnv()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
@@ -79,7 +79,7 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 	}, nil
 }
 
-func prewarmCache(ctx context.Context, cli *client.Client, workerImageName string) error {
+func prewarmCache(ctx context.Context, cli dockercli.Client, workerImageName string) error {
 	id := uuid.NewString()
 
 	hostPath, err := os.MkdirTemp("", "prewarming-worker-"+id)
@@ -175,7 +175,7 @@ func prewarmCache(ctx context.Context, cli *client.Client, workerImageName strin
 	return nil
 }
 
-func prePullImage(ctx context.Context, cli *client.Client, imageName string) (string, error) {
+func prePullImage(ctx context.Context, cli dockercli.Client, imageName string) (string, error) {
 	images, err := cli.ImageList(ctx, image.ListOptions{})
 	if err != nil {
 		log.Logger.WithField("image", imageName).Error("Failed to list local images")
