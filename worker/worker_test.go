@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/client"
 	docker "github.com/docker/docker/client"
 )
 
@@ -21,9 +25,22 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	imageName := "alpine:latest"
 	ctx := context.Background()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv)
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.48"))
 	if err != nil {
+		panic(err)
+	}
+
+	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
+	if err != nil {
+		log.Logger.WithField("image", imageName).Error("Failed to pull image")
+		panic(err)
+	}
+	defer reader.Close()
+	_, err = io.Copy(io.Discard, reader)
+	if err != nil {
+		log.Logger.WithError(err).Error("Failed to read pull output")
 		panic(err)
 	}
 
@@ -46,7 +63,7 @@ func TestMain(m *testing.M) {
 			types.Path("results.json"): types.SourceCode(jsonData),
 		},
 	}
-	w, err := NewWorker(ctx, cli, "alpine:latest", spec)
+	w, err := NewWorker(ctx, cli, imageName, spec)
 	if err != nil {
 		panic(err)
 	}
