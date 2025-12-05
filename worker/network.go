@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/dockercli"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	"github.com/google/uuid"
 )
 
@@ -16,15 +16,11 @@ type NetworkManager interface {
 }
 
 type DockerNetworkManager struct {
-	dockerCli *client.Client
+	dockerCli dockercli.NetworkConnector
 }
 
-func NewDockerNetworkManager(cli *client.Client) *DockerNetworkManager {
+func NewDockerNetworkManager(cli dockercli.NetworkConnector) *DockerNetworkManager {
 	return &DockerNetworkManager{dockerCli: cli}
-}
-
-func (dnm *DockerNetworkManager) GetDockerClient() *client.Client {
-	return dnm.dockerCli
 }
 
 // Ensure it satisfies the interface.

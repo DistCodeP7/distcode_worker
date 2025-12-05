@@ -41,7 +41,7 @@ func (wm *WorkerManager) ReserveWorkers(jobID uuid.UUID, specs []t.NodeSpec) ([]
 			current, len(specs), wm.maxWorkers)
 	}
 
-	workers, err := wm.workerProducer.NewWorkers(context.TODO(), specs)
+	workers, err := wm.workerProducer.NewWorkers(context.Background(), specs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobID, err)
 	}

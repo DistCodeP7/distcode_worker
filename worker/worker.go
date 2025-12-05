@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/DistCodeP7/distcode_worker/dockercli"
 	"github.com/DistCodeP7/distcode_worker/log"
 	t "github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/utils"
@@ -16,7 +17,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/sirupsen/logrus"
 )
@@ -24,7 +24,7 @@ import (
 type Worker struct {
 	alias       string
 	containerID string
-	dockerCli   *client.Client
+	dockerCli   dockercli.WorkerRuntime
 }
 
 type WorkerInterface interface {
@@ -77,7 +77,7 @@ func (w *Worker) Stop(ctx context.Context) error {
 
 // NewWorker creates and starts a new Docker container and returns the Worker instance.
 // Errors are returned for the caller to log if needed.
-func NewWorker(ctx context.Context, cli *client.Client, workerImageName string, spec t.NodeSpec) (*Worker, error) {
+func NewWorker(ctx context.Context, cli dockercli.Client, workerImageName string, spec t.NodeSpec) (*Worker, error) {
 	envVars := make([]string, 0, len(spec.Envs))
 	for _, env := range spec.Envs {
 		envVars = append(envVars, fmt.Sprintf("%s=%s", env.Key, env.Value))
