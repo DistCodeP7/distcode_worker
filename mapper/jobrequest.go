@@ -108,7 +108,7 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 
 	return &types.Job{
 		JobUID:  jobUID,
-		UserId:  req.UserId,
+		UserID:  req.UserId,
 		Timeout: time.Duration(req.Timeout) * time.Second,
 		Nodes:   nodes,
 	}, nil

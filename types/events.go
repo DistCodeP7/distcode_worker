@@ -5,60 +5,62 @@ import (
 	"github.com/google/uuid"
 )
 
-// JobStatus is a typed status for jobs, enforcing allowed values
-type JobStatus string
+type Phase string
 
 const (
-	StatusJobSuccess          JobStatus = "JOB_SUCCESS"
-	StatusJobFailed           JobStatus = "JOB_FAILED"
-	StatusJobTimeout          JobStatus = "JOB_TIMEOUT"
-	StatusJobCompilationError JobStatus = "JOB_COMPILATION_ERROR"
-	StatusJobCanceled         JobStatus = "JOB_CANCELED"
+	PhasePending   Phase = "PENDING"
+	PhaseCompiling Phase = "COMPILING"
+	PhaseRunning   Phase = "RUNNING"
+	PhaseCompleted Phase = "COMPLETED"
 )
 
-// StreamingEvent is the interface all event variants implement.
-type StreamingEvent interface {
-	EventKind() string
-}
+type JobEventType string
 
-// Kind constants for JSON readability and frontend discriminant
 const (
-	KindCompiled = "compiled"
-	KindLog      = "log"
-	KindStatus   = "status"
+	TypeLog    JobEventType = "log"
+	TypeStatus JobEventType = "status"
+	TypeResult JobEventType = "result"
 )
 
-// CompiledEvent indicates compilation outcome for the job (all containers)
-type CompiledEvent struct {
-	Success        bool   `json:"success"`
-	FailedWorkerID string `json:"failed_worker_id,omitempty"`
-	Error          string `json:"error,omitempty"`
+type Outcome string
+
+const (
+	OutcomeSuccess          Outcome = "SUCCESS"
+	OutcomeFailed           Outcome = "FAILED" // Runtime error
+	OutcomeCompilationError Outcome = "COMPILATION_ERROR"
+	OutcomeTimeout          Outcome = "TIMEOUT"
+	OutcomeCancel           Outcome = "CANCELED"
+)
+
+type StreamingJobEvent struct {
+	JobUID uuid.UUID    `json:"job_uid"`
+	UserID string       `json:"user_id"`
+	Type   JobEventType `json:"type"` // "log", "status", "result"
+
+	// Payloads (Only one is non-nil)
+	Log    *LogEvent    `json:"log,omitempty"`
+	Status *StatusEvent `json:"status,omitempty"`
+	Result *ResultEvent `json:"result,omitempty"`
 }
 
-func (e CompiledEvent) EventKind() string { return KindCompiled }
-
-// LogEvent is a buffered log chunk belonging to the job; includes worker id.
+// 1. LogEvent
 type LogEvent struct {
-	WorkerID string `json:"worker_id,omitempty"`
+	WorkerID string `json:"worker_id"`
+	Phase    Phase  `json:"phase"` // Matches JobSessionLogger.Phase
 	Message  string `json:"message"`
 }
 
-func (e LogEvent) EventKind() string { return KindLog }
-
-// StatusEvent is the final job summary
+// 2. StatusEvent
 type StatusEvent struct {
-	Status         JobStatus       `json:"status"`
-	Message        string          `json:"message,omitempty"`
-	DurationMillis int64           `json:"duration_millis"`
-	TestResults    []dt.TestResult `json:"test_results,omitempty"`
-	FailedWorkerID string          `json:"failed_worker_id,omitempty"`
+	Phase   string `json:"phase"`
+	Message string `json:"message"`
 }
 
-func (e StatusEvent) EventKind() string { return KindStatus }
-
-// StreamingJobEvent is the job-level wrapper that is sent over the channel.
-type StreamingJobEvent struct {
-	JobUID uuid.UUID        `json:"job_uid"`
-	Events []StreamingEvent `json:"events"`
-	UserId string           `json:"user_id"`
+// 3. ResultEvent
+type ResultEvent struct {
+	Outcome        Outcome         `json:"outcome"` // SUCCESS, FAILED, etc.
+	DurationMs     int64           `json:"duration_ms"`
+	TestResults    []dt.TestResult `json:"test_results,omitempty"`
+	FailedWorkerID string          `json:"failed_worker_id,omitempty"`
+	Error          string          `json:"error,omitempty"`
 }
