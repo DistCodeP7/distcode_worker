@@ -145,6 +145,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 
 	// 1) Compile step: ensure each container compiles before running anything
 	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, workers, job.Nodes, job)
+
 	// Send compiled event regardless of success/failure
 	d.sendJobEvents(job, types.CompiledEvent{
 		Success:        compiledSuccess,
@@ -158,7 +159,6 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	})
 
 	if !compiledSuccess {
-		// short-circuit on compilation failure and send final status
 		d.metricsCollector.IncJobFailure()
 		duration := d.clock.Since(startTime).Milliseconds()
 		d.sendJobEvents(job, types.StatusEvent{
@@ -173,12 +173,38 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	// 2) Execution step: run all containers concurrently, buffer logs per worker and send job-level log events (buffered)
 	execErr := d.executeAll(jobCtx, job, workers, job.Nodes, jc)
 
+	// Find test container and read log file and send to test results
+	var testWorker WorkerInterface
+	for _, w := range workers {
+		if w.Alias() == "test-container" {
+			testWorker = w
+			break
+		}
+	}
+
+	if testWorker == nil {
+		fmt.Println("No test worker found")
+	} else {
+		fmt.Println("Test worker found:", testWorker.ID())
+	}
+
+	testResults, err := testWorker.ReadTestResults(ctx, "app/tmp/test_results.json")
+	if err != nil {
+		log.Logger.Errorf("Failed to read test results: %v", err)
+	}
+
+	for _, tr := range testResults {
+		log.Logger.Infof("Test Result - Name: %s, Type: %s, Duration: %dms, Message: %s, Panic: %s",
+			tr.Name, tr.Type, tr.DurationMs, tr.Message, tr.Panic)
+	}
+
 	// 3) Final status
 	if jc != nil && jc.CanceledByUser.Load() {
 		d.metricsCollector.IncJobCanceled()
 		duration := d.clock.Since(startTime).Milliseconds()
 		d.sendJobEvents(job, types.StatusEvent{
 			Status:         types.StatusJobCanceled,
+			TestResults:    testResults,
 			Message:        "job canceled by user",
 			DurationMillis: duration,
 		})
@@ -192,6 +218,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 			Status:         types.StatusJobTimeout,
 			Message:        fmt.Sprintf("job timed out after %ds", job.Timeout),
 			DurationMillis: duration,
+			TestResults:    testResults,
 		})
 		return
 	}
@@ -204,15 +231,18 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 			Status:         types.StatusJobFailed,
 			Message:        execErr.Error(),
 			DurationMillis: duration,
+			TestResults:    testResults,
 		})
 		return
 	}
 
 	d.metricsCollector.IncJobSuccess()
 	duration := d.clock.Since(startTime).Milliseconds()
+
 	d.sendJobEvents(job, types.StatusEvent{
 		Status:         types.StatusJobSuccess,
 		Message:        "completed successfully",
+		TestResults:    testResults,
 		DurationMillis: duration,
 	})
 }

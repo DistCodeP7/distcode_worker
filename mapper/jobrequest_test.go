@@ -239,3 +239,233 @@ func TestConvertToJobRequest_EmptyFiles(t *testing.T) {
 		t.Error("expected empty file maps")
 	}
 }
+func TestCreatePeerAliasEnv(t *testing.T) {
+	tests := []struct {
+		name     string
+		replicas []types.IncomingReplicaConfig
+		expected types.EnvironmentVariable
+	}{
+		{
+			name: "single replica",
+			replicas: []types.IncomingReplicaConfig{
+				{Alias: "replica1"},
+			},
+			expected: types.EnvironmentVariable{
+				Key:   "PEERS",
+				Value: "replica1",
+			},
+		},
+		{
+			name: "multiple replicas",
+			replicas: []types.IncomingReplicaConfig{
+				{Alias: "replica1"},
+				{Alias: "replica2"},
+				{Alias: "replica3"},
+			},
+			expected: types.EnvironmentVariable{
+				Key:   "PEERS",
+				Value: "replica1,replica2,replica3",
+			},
+		},
+		{
+			name:     "empty replicas",
+			replicas: []types.IncomingReplicaConfig{},
+			expected: types.EnvironmentVariable{
+				Key:   "PEERS",
+				Value: "",
+			},
+		},
+		{
+			name: "replicas with special characters",
+			replicas: []types.IncomingReplicaConfig{
+				{Alias: "replica-1"},
+				{Alias: "replica_2"},
+				{Alias: "replica.3"},
+			},
+			expected: types.EnvironmentVariable{
+				Key:   "PEERS",
+				Value: "replica-1,replica_2,replica.3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := createPeerAliasEnv(tt.replicas)
+
+			if result.Key != tt.expected.Key {
+				t.Errorf("expected key %q, got %q", tt.expected.Key, result.Key)
+			}
+
+			if result.Value != tt.expected.Value {
+				t.Errorf("expected value %q, got %q", tt.expected.Value, result.Value)
+			}
+		})
+	}
+}
+func TestConvertToJobRequest_PeersEnvInNodes(t *testing.T) {
+	validUUID := uuid.New().String()
+
+	req := types.JobRequest{
+		JobUID:  validUUID,
+		UserId:  "user123",
+		Timeout: 30,
+		Nodes: types.ContainerConfigs{
+			TestContainer: types.TestContainerConfig{
+				Alias: "test-container",
+				Envs: []types.EnvironmentVariable{
+					{Key: "TEST_VAR", Value: "test"},
+				},
+			},
+			Submission: types.SubmissionConfig{
+				GlobalEnvs: []types.EnvironmentVariable{
+					{Key: "GLOBAL_VAR", Value: "global"},
+				},
+				ReplicaConfigs: []types.IncomingReplicaConfig{
+					{
+						Alias: "replica1",
+						Envs: []types.EnvironmentVariable{
+							{Key: "LOCAL_VAR", Value: "local1"},
+						},
+					},
+					{
+						Alias: "replica2",
+						Envs: []types.EnvironmentVariable{
+							{Key: "LOCAL_VAR", Value: "local2"},
+						},
+					},
+					{Alias: "replica3"},
+				},
+			},
+		},
+	}
+
+	job, err := ConvertToJobRequest(&req)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expectedPeersValue := "replica1,replica2,replica3"
+
+	// Test container should have PEERS env
+	testNode := job.Nodes[0]
+	testEnvs := make(map[string]string)
+	for _, env := range testNode.Envs {
+		testEnvs[env.Key] = env.Value
+	}
+	if testEnvs["PEERS"] != expectedPeersValue {
+		t.Errorf("test container PEERS env incorrect: expected %q, got %q", expectedPeersValue, testEnvs["PEERS"])
+	}
+	if testEnvs["TEST_VAR"] != "test" {
+		t.Errorf("test container original env lost: expected 'test', got %q", testEnvs["TEST_VAR"])
+	}
+
+	// Each replica should have PEERS env
+	for i := 1; i < len(job.Nodes); i++ {
+		replicaNode := job.Nodes[i]
+		replicaEnvs := make(map[string]string)
+		for _, env := range replicaNode.Envs {
+			replicaEnvs[env.Key] = env.Value
+		}
+		if replicaEnvs["PEERS"] != expectedPeersValue {
+			t.Errorf("replica %d PEERS env incorrect: expected %q, got %q", i, expectedPeersValue, replicaEnvs["PEERS"])
+		}
+	}
+}
+
+func TestConvertToJobRequest_PeersEnvSingleReplica(t *testing.T) {
+	validUUID := uuid.New().String()
+
+	req := types.JobRequest{
+		JobUID: validUUID,
+		Nodes: types.ContainerConfigs{
+			TestContainer: types.TestContainerConfig{
+				Alias: "test",
+			},
+			Submission: types.SubmissionConfig{
+				ReplicaConfigs: []types.IncomingReplicaConfig{
+					{Alias: "only-replica"},
+				},
+			},
+		},
+	}
+
+	job, err := ConvertToJobRequest(&req)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expectedPeersValue := "only-replica"
+
+	// Check test container
+	testEnvs := make(map[string]string)
+	for _, env := range job.Nodes[0].Envs {
+		testEnvs[env.Key] = env.Value
+	}
+	if testEnvs["PEERS"] != expectedPeersValue {
+		t.Errorf("test container PEERS env incorrect: expected %q, got %q", expectedPeersValue, testEnvs["PEERS"])
+	}
+
+	// Check replica
+	replicaEnvs := make(map[string]string)
+	for _, env := range job.Nodes[1].Envs {
+		replicaEnvs[env.Key] = env.Value
+	}
+	if replicaEnvs["PEERS"] != expectedPeersValue {
+		t.Errorf("replica PEERS env incorrect: expected %q, got %q", expectedPeersValue, replicaEnvs["PEERS"])
+	}
+}
+
+func TestConvertToJobRequest_PeersEnvOverridesBehavior(t *testing.T) {
+	validUUID := uuid.New().String()
+
+	req := types.JobRequest{
+		JobUID: validUUID,
+		Nodes: types.ContainerConfigs{
+			TestContainer: types.TestContainerConfig{
+				Alias: "test",
+				Envs: []types.EnvironmentVariable{
+					{Key: "PEERS", Value: "should-be-overridden"},
+				},
+			},
+			Submission: types.SubmissionConfig{
+				GlobalEnvs: []types.EnvironmentVariable{
+					{Key: "PEERS", Value: "global-peers"},
+				},
+				ReplicaConfigs: []types.IncomingReplicaConfig{
+					{
+						Alias: "replica1",
+						Envs: []types.EnvironmentVariable{
+							{Key: "PEERS", Value: "local-peers"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	job, err := ConvertToJobRequest(&req)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expectedPeersValue := "replica1"
+
+	// Test container: PEERS from createPeerAliasEnv should override original
+	testEnvs := make(map[string]string)
+	for _, env := range job.Nodes[0].Envs {
+		testEnvs[env.Key] = env.Value
+	}
+	if testEnvs["PEERS"] != expectedPeersValue {
+		t.Errorf("test container PEERS should be overridden: expected %q, got %q", expectedPeersValue, testEnvs["PEERS"])
+	}
+
+	// Replica: PEERS from createPeerAliasEnv should override all others
+	replicaEnvs := make(map[string]string)
+	for _, env := range job.Nodes[1].Envs {
+		replicaEnvs[env.Key] = env.Value
+	}
+	if replicaEnvs["PEERS"] != expectedPeersValue {
+		t.Errorf("replica PEERS should be overridden: expected %q, got %q", expectedPeersValue, replicaEnvs["PEERS"])
+	}
+}
