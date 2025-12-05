@@ -13,15 +13,14 @@ import (
 func main() {
 	log.Init(l.TraceLevel, true)
 	// Parse command line flags
-	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
+	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 	log.Logger.WithFields(l.Fields{
-		"worker_image":     workerImageName,
-		"controller_image": controllerImageName,
-		"num_workers":      numWorkers,
+		"worker_image": workerImageName,
+		"num_workers":  numWorkers,
 	}).Info("Application initialized")
 
 	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
-	appResources, err := setup.SetupApp(workerImageName, controllerImageName)
+	appResources, err := setup.SetupApp(workerImageName)
 	if err != nil {
 		log.Logger.WithError(err).Fatal("Fatal error in setup")
 	}

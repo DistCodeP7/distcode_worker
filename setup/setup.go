@@ -33,7 +33,7 @@ type AppResources struct {
 // It also pre-warms the cache by running a dummy container.
 // Returns an AppResources struct containing the context, cancel function, and Docker client.
 // If any step fails, it cleans up resources and returns an error.
-func SetupApp(workerImageName string, controllerImageName string) (*AppResources, error) {
+func SetupApp(workerImageName string) (*AppResources, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	handleSignals(cancel)
 
@@ -51,13 +51,6 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 		log.Logger.WithField("image", workerImageName).Fatal("Failed to pre-pull worker image")
 	}
 
-	effectiveControllerImage, err := prePullImage(ctx, cli, controllerImageName)
-	if err != nil {
-		cli.Close()
-		cancel()
-		log.Logger.WithField("image", controllerImageName).Fatal("Failed to pre-pull controller image")
-	}
-
 	if err := prewarmCache(ctx, cli, effectiveWorkerImage); err != nil {
 		cli.Close()
 		cancel()
@@ -66,16 +59,14 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 	}
 
 	log.Logger.WithFields(logrus.Fields{
-		"worker_image":     effectiveWorkerImage,
-		"controller_image": effectiveControllerImage,
+		"worker_image": effectiveWorkerImage,
 	}).Info("Application setup completed successfully")
 
 	return &AppResources{
-		Ctx:             ctx,
-		Cancel:          cancel,
-		DockerCli:       cli,
-		WorkerImage:     effectiveWorkerImage,
-		ControllerImage: effectiveControllerImage,
+		Ctx:         ctx,
+		Cancel:      cancel,
+		DockerCli:   cli,
+		WorkerImage: effectiveWorkerImage,
 	}, nil
 }
 
