@@ -133,7 +133,6 @@ func TestWorker_ExecuteCommand_Timeout(t *testing.T) {
 		t.Fatal("Expected error due to context timeout, got nil")
 	}
 
-	// We expect the error to likely be context.DeadlineExceeded or a wrapped error
 	if ctx.Err() != context.DeadlineExceeded {
 		t.Errorf("Expected context deadline exceeded, got: %v", ctx.Err())
 	}
@@ -141,7 +140,7 @@ func TestWorker_ExecuteCommand_Timeout(t *testing.T) {
 
 func TestWorker_ExecuteCommand_ExitError(t *testing.T) {
 	var buf bytes.Buffer
-	// 'false' is a shell command that exits with 1
+
 	err := testWorker.ExecuteCommand(testCtx, ExecuteCommandOptions{
 		Cmd:          "false",
 		OutputWriter: &buf,
@@ -236,25 +235,22 @@ func TestWorker_Network_Operations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Create a temporary network
 	netName := "test-worker-net-" + strings.ToLower(testWorker.Alias())
 	netResp, err := cli.NetworkCreate(testCtx, netName, network.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create temp network: %v", err)
 	}
-	// Ensure network cleanup
+
 	defer func() {
 		_ = cli.NetworkRemove(context.Background(), netResp.ID)
 	}()
 
-	// 2. Connect the existing testWorker to this network
 	netAlias := "worker-net-alias"
 	err = testWorker.ConnectToNetwork(testCtx, netName, netAlias)
 	if err != nil {
 		t.Fatalf("Failed to connect to network: %v", err)
 	}
 
-	// 3. Verify connection by inspecting the container
 	containerJSON, err := cli.ContainerInspect(testCtx, testWorker.ID())
 	if err != nil {
 		t.Fatalf("Failed to inspect container: %v", err)
@@ -264,13 +260,11 @@ func TestWorker_Network_Operations(t *testing.T) {
 		t.Errorf("Container is not attached to network %s", netName)
 	}
 
-	// 4. Disconnect
 	err = testWorker.DisconnectFromNetwork(testCtx, netName)
 	if err != nil {
 		t.Fatalf("Failed to disconnect from network: %v", err)
 	}
 
-	// 5. Verify disconnection
 	containerJSON, err = cli.ContainerInspect(testCtx, testWorker.ID())
 	if err != nil {
 		t.Fatalf("Failed to inspect container: %v", err)
@@ -280,7 +274,7 @@ func TestWorker_Network_Operations(t *testing.T) {
 	}
 }
 func TestWorker_NetworkManager_Integration(t *testing.T) {
-	// 1. Setup Client
+
 	ctx := context.Background()
 	cli, err := docker.NewClientWithOpts(
 		docker.FromEnv,
@@ -290,8 +284,6 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 2. Create Workers with specific aliases
-	// The NetworkManager uses these aliases as the DNS names on the network.
 	aliasA := "manager-node-a"
 	aliasB := "manager-node-b"
 
@@ -309,25 +301,18 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	}
 	defer workerB.Stop(context.Background())
 
-	// 3. Initialize your DockerNetworkManager
 	netManager := NewDockerNetworkManager(cli)
 
-	// 4. Use the Manager to Create Network and Connect Workers
-	// We verify that the manager returns a cleanup function and no error.
 	workers := []WorkerInterface{workerA, workerB}
 	cleanup, netName, err := netManager.CreateAndConnect(ctx, workers)
 	if err != nil {
 		t.Fatalf("NetworkManager failed to connect workers: %v", err)
 	}
 
-	// CRITICAL: Ensure the cleanup runs at the end of the test
 	defer cleanup()
 
 	t.Logf("Network Manager created network: %s", netName)
 
-	// 5. Verify Reachability (A -> B)
-	// We ping 'aliasB' because your manager implementation does:
-	// worker.ConnectToNetwork(..., worker.Alias())
 	t.Logf("Attempting to ping %s from %s...", aliasB, aliasA)
 
 	var bufA bytes.Buffer
@@ -344,7 +329,6 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 		t.Errorf("Ping output did not indicate success:\n%s", bufA.String())
 	}
 
-	// 6. Verify Reverse Reachability (B -> A)
 	t.Logf("Attempting to ping %s from %s...", aliasA, aliasB)
 
 	var bufB bytes.Buffer
