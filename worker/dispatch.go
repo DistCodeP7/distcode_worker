@@ -139,8 +139,15 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 		}
 	}()
 
+	workerSpec, err := d.pairWorkerSpecs(workers, job.Nodes)
+	if err != nil {
+		d.metricsCollector.IncJobFailure()
+		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to pair workers and specs: %w", err), "")
+		return
+	}
+
 	session.SetPhase(types.PhaseCompiling, "Compiling code...")
-	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, session, workers, job.Nodes)
+	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, session, workerSpec)
 
 	if !compiledSuccess {
 		d.metricsCollector.IncJobFailure()
@@ -149,7 +156,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	}
 
 	session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
-	execErr := d.executeAll(jobCtx, session, workers, job.Nodes, jc)
+	execErr := d.executeAll(jobCtx, session, workerSpec, jc)
 
 	testResults := d.collectTestResults(ctx, workers)
 
@@ -179,37 +186,48 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	session.FinishSuccess(testResults)
 }
 
+type WorkUnit struct {
+	Spec   types.NodeSpec
+	Worker WorkerInterface
+}
+
+func (d *JobDispatcher) pairWorkerSpecs(worker []WorkerInterface, specs []types.NodeSpec) ([]WorkUnit, error) {
+	workerByAlias := make(map[string]WorkerInterface, len(worker))
+
+	for _, w := range worker {
+		workerByAlias[w.Alias()] = w
+	}
+
+	var workUnits []WorkUnit
+	for _, spec := range specs {
+		w, ok := workerByAlias[spec.Alias]
+		if !ok {
+			return nil, fmt.Errorf("no worker found for alias %s", spec.Alias)
+		}
+		workUnits = append(workUnits, WorkUnit{
+			Spec:   spec,
+			Worker: w,
+		})
+	}
+	return workUnits, nil
+}
+
 // compileAll runs build command on each worker sequentially/concurrently and streams logs
 func (d *JobDispatcher) compileAll(
 	ctx context.Context,
 	session *jobsession.JobSessionLogger,
-	workers []WorkerInterface,
-	specs []types.NodeSpec,
+	workUnits []WorkUnit,
 ) (bool, string, error) {
-
-	workerByAlias := make(map[string]WorkerInterface, len(workers))
-	for _, w := range workers {
-		workerByAlias[w.Alias()] = w
-	}
 
 	var wg sync.WaitGroup
 	type buildResult struct {
 		workerID string
 		err      error
 	}
-	results := make(chan buildResult, len(specs))
+	results := make(chan buildResult, len(workUnits))
 
-	for _, spec := range specs {
-		worker, ok := workerByAlias[spec.Alias]
-		if !ok {
-			results <- buildResult{
-				workerID: spec.Alias,
-				err:      fmt.Errorf("no worker found for alias %s", spec.Alias),
-			}
-			continue
-		}
-
-		if spec.BuildCommand == "" {
+	for _, workUnit := range workUnits {
+		if workUnit.Spec.BuildCommand == "" {
 			continue
 		}
 
@@ -217,7 +235,6 @@ func (d *JobDispatcher) compileAll(
 		go func(w WorkerInterface, s types.NodeSpec) {
 			defer wg.Done()
 
-			// Create streaming writer for this worker
 			logWriter := session.NewLogWriter(w.Alias())
 			fmt.Fprintf(logWriter, "Running build: %s\n", s.BuildCommand)
 
@@ -229,7 +246,7 @@ func (d *JobDispatcher) compileAll(
 			if err != nil {
 				results <- buildResult{workerID: w.ID(), err: err}
 			}
-		}(worker, spec)
+		}(workUnit.Worker, workUnit.Spec)
 	}
 
 	go func() {
@@ -251,24 +268,14 @@ func (d *JobDispatcher) compileAll(
 func (d *JobDispatcher) executeAll(
 	ctx context.Context,
 	session *jobsession.JobSessionLogger,
-	workers []WorkerInterface,
-	specs []types.NodeSpec,
+	workUnits []WorkUnit,
 	jc *JobCancellation,
 ) error {
 
-	workerByAlias := make(map[string]WorkerInterface, len(workers))
-	for _, w := range workers {
-		workerByAlias[w.Alias()] = w
-	}
-
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(specs))
+	errCh := make(chan error, len(workUnits))
 
-	for _, spec := range specs {
-		worker, ok := workerByAlias[spec.Alias]
-		if !ok {
-			return fmt.Errorf("no worker found for alias %s", spec.Alias)
-		}
+	for _, workUnit := range workUnits {
 
 		wg.Add(1)
 		go func(w WorkerInterface, s types.NodeSpec) {
@@ -290,7 +297,7 @@ func (d *JobDispatcher) executeAll(
 					jc.Cancel()
 				}
 			}
-		}(worker, spec)
+		}(workUnit.Worker, workUnit.Spec)
 	}
 
 	wg.Wait()
