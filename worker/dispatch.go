@@ -46,8 +46,9 @@ type JobDispatcher struct {
 	metricsCollector metrics.JobMetricsCollector
 	clock            clockwork.Clock
 
-	mu         sync.Mutex
-	activeJobs map[string]*JobCancellation
+	mu           sync.Mutex
+	activeJobs   map[string]*JobCancellation
+	activeJobsWg sync.WaitGroup
 }
 
 func NewJobDispatcher(
@@ -83,9 +84,14 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Logger.Info("Dispatcher stopping, waiting for active jobs to finish...")
+			d.activeJobsWg.Wait()
+			log.Logger.Info("All jobs finished. Dispatcher exiting.")
 			return
 		case job := <-d.jobChannel:
-			go d.processJob(ctx, job)
+			d.activeJobsWg.Go(func() {
+				d.processJob(ctx, job)
+			})
 		case cancelReq := <-d.cancelJobChan:
 			go d.cancelJob(cancelReq)
 		}

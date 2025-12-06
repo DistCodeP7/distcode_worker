@@ -35,19 +35,12 @@ func main() {
 
 	defer close(resultsCh)
 
-	// Start a goroutine to receive jobs from RabbitMQ
-	go func() {
-		if err := mq.StartJobConsumer(appResources.Ctx, jobsCh); err != nil {
-			log.Logger.WithError(err).Error("MQ error")
-		}
-	}()
-
-	// Start a goroutine to receive cancel requests from RabbitMQ
-	go func() {
-		if err := mq.StartJobCanceller(appResources.Ctx, cancelJobCh); err != nil {
-			log.Logger.WithError(err).Error("MQ error")
-		}
-	}()
+	mq.StartJobHandlers(mq.MQResources{
+		AppResources: appResources,
+		JobsCh:       jobsCh,
+		CancelJobCh:  cancelJobCh,
+		ResultsCh:    resultsCh,
+	})
 
 	db, err := db.NewPostgresRepository(appResources.Ctx)
 	if err != nil {
@@ -78,15 +71,15 @@ func main() {
 		m,
 	)
 
-	go dispatcher.Run(appResources.Ctx)
-	// Start separate publishers for results and metrics
+	dispatcherDone := make(chan struct{})
+
 	go func() {
-		if err := mq.PublishStreamingEvents(appResources.Ctx, mq.EventTypeResults, resultsCh); err != nil {
-			log.Logger.WithError(err).Fatal("MQ results publisher error")
-		}
+		dispatcher.Run(appResources.Ctx)
+		close(dispatcherDone)
 	}()
 
 	<-appResources.Ctx.Done()
+	<-dispatcherDone
 	if err := wm.Shutdown(); err != nil {
 		log.Logger.WithError(err).Error("Error shutting down workers")
 	}
