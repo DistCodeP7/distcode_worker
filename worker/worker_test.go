@@ -15,7 +15,6 @@ import (
 	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	docker "github.com/docker/docker/client"
 )
 
@@ -27,7 +26,7 @@ var (
 func TestMain(m *testing.M) {
 	imageName := "alpine:latest"
 	ctx := context.Background()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.48"))
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithVersion("1.48"))
 	if err != nil {
 		panic(err)
 	}
@@ -191,7 +190,14 @@ echo "My Key is $MY_Start_KEY"
 		},
 	}
 
-	cli, _ := docker.NewClientWithOpts(docker.FromEnv)
+	cli, err := docker.NewClientWithOpts(
+		docker.FromEnv,
+		docker.WithVersion("1.48"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	w, err := NewWorker(testCtx, cli, "alpine:latest", spec)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
@@ -221,7 +227,10 @@ echo "My Key is $MY_Start_KEY"
 }
 
 func TestWorker_Network_Operations(t *testing.T) {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv)
+	cli, err := docker.NewClientWithOpts(
+		docker.FromEnv,
+		docker.WithVersion("1.48"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
