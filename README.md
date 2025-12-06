@@ -10,10 +10,10 @@
    docker-compose up -d
    ```
 
-2. Run go application:
+2. Run go application with the database URL environment variable:
 
    ```bash
-   go run main.go
+   DB_URL="..." go run main.go
    ```
 
 3. Test the message queue using Python:
@@ -40,10 +40,10 @@
 
 ## Run the Go application
 
-1. Run the application run:
+1.  Run go application with the database URL environment variable:
 
    ```bash
-   go run main.go
+   DB_URL="..." go run main.go
    ```
 
 2. Run tests:

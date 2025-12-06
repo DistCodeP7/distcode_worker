@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/DistCodeP7/distcode_worker/db"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/mq"
@@ -48,6 +49,13 @@ func main() {
 		}
 	}()
 
+	db, err := db.NewPostgresRepository(appResources.Ctx)
+	if err != nil {
+		log.Logger.WithError(err).Fatal("Failed to connect to database")
+	} else {
+		log.Logger.Info("Connected to database")
+	}
+	defer db.Close()
 	// Serve a metrics endpoint
 	m := metrics.NewInMemoryMetricsCollector()
 	server := metrics.NewHTTPServer(":8001", m)
@@ -66,6 +74,7 @@ func main() {
 		resultsCh,
 		wm,
 		worker.NewDockerNetworkManager(appResources.DockerCli),
+		db,
 		m,
 	)
 

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/db"
 	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/metrics"
@@ -39,6 +40,7 @@ type JobDispatcher struct {
 	cancelJobChan    <-chan types.CancelJobRequest
 	jobChannel       <-chan types.Job
 	resultsChannel   chan<- types.StreamingJobEvent
+	db               db.JobRepository
 	workerManager    WorkerManagerInterface
 	networkManager   NetworkManagerInterface
 	metricsCollector metrics.JobMetricsCollector
@@ -54,6 +56,7 @@ func NewJobDispatcher(
 	resultsChannel chan<- types.StreamingJobEvent,
 	workerManager WorkerManagerInterface,
 	networkManager NetworkManagerInterface,
+	db db.JobRepository,
 	metricsCollector metrics.JobMetricsCollector,
 	opts ...func(*JobDispatcher),
 ) *JobDispatcher {
@@ -63,6 +66,7 @@ func NewJobDispatcher(
 		resultsChannel:   resultsChannel,
 		workerManager:    workerManager,
 		networkManager:   networkManager,
+		db:               db,
 		metricsCollector: metricsCollector,
 		clock:            clockwork.NewRealClock(),
 		activeJobs:       make(map[string]*JobCancellation),
@@ -117,6 +121,25 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	session := jobsession.NewJobSession(job, d.resultsChannel)
 	session.SetPhase(types.PhasePending, "Reserving workers...")
 
+	var testResults []dt.TestResult
+	defer func() {
+		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := d.db.SaveResult(
+			saveCtx,
+			job.JobUID,
+			session.GetOutcome(),
+			testResults,
+			session.GetBufferedLogs(),
+			session.StartTime(),
+		)
+
+		if err != nil {
+			log.Logger.Errorf("Failed to save job results to DB: %v", err)
+		}
+	}()
+
+	defer d.cleanupJob(job.JobUID)
 	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
 		d.metricsCollector.IncJobFailure()
@@ -125,7 +148,6 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	}
 
 	jobCtx, jc := d.createJobContext(ctx, job)
-	defer d.cleanupJob(job.JobUID)
 
 	cleanup, _, netErr := d.networkManager.CreateAndConnect(jobCtx, workers)
 	if netErr != nil {
@@ -158,7 +180,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
 	execErr := d.executeAll(jobCtx, session, workerSpec, jc)
 
-	testResults := d.collectTestResults(ctx, workers)
+	testResults = d.collectTestResults(ctx, workers)
 
 	d.mu.Lock()
 	canceledByUser := jc.CanceledByUser
@@ -167,23 +189,16 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	if canceledByUser {
 		d.metricsCollector.IncJobCanceled()
 		session.FinishFail(testResults, types.OutcomeCancel, errors.New("job canceled by user"), "")
-		return
-	}
-
-	if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
+	} else if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
 		d.metricsCollector.IncJobTimeout()
 		session.FinishFail(testResults, types.OutcomeTimeout, fmt.Errorf("job timed out after %ds", job.Timeout), "")
-		return
-	}
-
-	if execErr != nil {
+	} else if execErr != nil {
 		d.metricsCollector.IncJobFailure()
 		session.FinishFail(testResults, types.OutcomeFailed, execErr, "")
-		return
+	} else {
+		d.metricsCollector.IncJobSuccess()
+		session.FinishSuccess(testResults)
 	}
-
-	d.metricsCollector.IncJobSuccess()
-	session.FinishSuccess(testResults)
 }
 
 type WorkUnit struct {

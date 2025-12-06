@@ -2,7 +2,6 @@ package types
 
 import (
 	dt "github.com/distcodep7/dsnet/testing/disttest"
-	"github.com/google/uuid"
 )
 
 type Phase string
@@ -33,7 +32,6 @@ const (
 )
 
 type StreamingJobEvent struct {
-	JobUID uuid.UUID    `json:"job_uid"`
 	UserID string       `json:"user_id"`
 	Type   JobEventType `json:"type"` // "log", "status", "result"
 	Log    *LogEvent    `json:"log,omitempty"`
