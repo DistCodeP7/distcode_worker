@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -276,5 +277,83 @@ func TestWorker_Network_Operations(t *testing.T) {
 	}
 	if _, ok := containerJSON.NetworkSettings.Networks[netName]; ok {
 		t.Errorf("Container is still attached to network %s after disconnect", netName)
+	}
+}
+func TestWorker_NetworkManager_Integration(t *testing.T) {
+	// 1. Setup Client
+	ctx := context.Background()
+	cli, err := docker.NewClientWithOpts(
+		docker.FromEnv,
+		docker.WithVersion("1.48"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Create Workers with specific aliases
+	// The NetworkManager uses these aliases as the DNS names on the network.
+	aliasA := "manager-node-a"
+	aliasB := "manager-node-b"
+
+	specA := types.NodeSpec{Alias: aliasA}
+	workerA, err := NewWorker(ctx, cli, "alpine:latest", specA)
+	if err != nil {
+		t.Fatalf("Failed to create Worker A: %v", err)
+	}
+	defer workerA.Stop(context.Background())
+
+	specB := types.NodeSpec{Alias: aliasB}
+	workerB, err := NewWorker(ctx, cli, "alpine:latest", specB)
+	if err != nil {
+		t.Fatalf("Failed to create Worker B: %v", err)
+	}
+	defer workerB.Stop(context.Background())
+
+	// 3. Initialize your DockerNetworkManager
+	netManager := NewDockerNetworkManager(cli)
+
+	// 4. Use the Manager to Create Network and Connect Workers
+	// We verify that the manager returns a cleanup function and no error.
+	workers := []WorkerInterface{workerA, workerB}
+	cleanup, netName, err := netManager.CreateAndConnect(ctx, workers)
+	if err != nil {
+		t.Fatalf("NetworkManager failed to connect workers: %v", err)
+	}
+
+	// CRITICAL: Ensure the cleanup runs at the end of the test
+	defer cleanup()
+
+	t.Logf("Network Manager created network: %s", netName)
+
+	// 5. Verify Reachability (A -> B)
+	// We ping 'aliasB' because your manager implementation does:
+	// worker.ConnectToNetwork(..., worker.Alias())
+	t.Logf("Attempting to ping %s from %s...", aliasB, aliasA)
+
+	var bufA bytes.Buffer
+	err = workerA.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasB),
+		OutputWriter: &bufA,
+	})
+
+	if err != nil {
+		t.Fatalf("Worker A failed to ping Worker B. Error: %v\nOutput:\n%s", err, bufA.String())
+	}
+
+	if !strings.Contains(bufA.String(), "0% packet loss") {
+		t.Errorf("Ping output did not indicate success:\n%s", bufA.String())
+	}
+
+	// 6. Verify Reverse Reachability (B -> A)
+	t.Logf("Attempting to ping %s from %s...", aliasA, aliasB)
+
+	var bufB bytes.Buffer
+	err = workerB.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasA),
+		OutputWriter: &bufB,
+	})
+
+	if err != nil {
+		t.Fatalf("Worker B failed to ping Worker A. Error: %v\nOutput:\n%s", err, bufB.String())
 	}
 }
