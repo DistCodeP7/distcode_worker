@@ -58,8 +58,6 @@ func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-c
 						return err
 					}
 
-					log.Logger.Tracef("Published %s for job %s", eventType, event.JobUID.String())
-
 				case <-ctx.Done():
 					return nil
 				}

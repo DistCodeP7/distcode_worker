@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	docker "github.com/docker/docker/client"
 )
 
@@ -27,7 +27,7 @@ var (
 func TestMain(m *testing.M) {
 	imageName := "alpine:latest"
 	ctx := context.Background()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.48"))
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithVersion("1.48"))
 	if err != nil {
 		panic(err)
 	}
@@ -133,7 +133,6 @@ func TestWorker_ExecuteCommand_Timeout(t *testing.T) {
 		t.Fatal("Expected error due to context timeout, got nil")
 	}
 
-	// We expect the error to likely be context.DeadlineExceeded or a wrapped error
 	if ctx.Err() != context.DeadlineExceeded {
 		t.Errorf("Expected context deadline exceeded, got: %v", ctx.Err())
 	}
@@ -141,7 +140,7 @@ func TestWorker_ExecuteCommand_Timeout(t *testing.T) {
 
 func TestWorker_ExecuteCommand_ExitError(t *testing.T) {
 	var buf bytes.Buffer
-	// 'false' is a shell command that exits with 1
+
 	err := testWorker.ExecuteCommand(testCtx, ExecuteCommandOptions{
 		Cmd:          "false",
 		OutputWriter: &buf,
@@ -191,7 +190,14 @@ echo "My Key is $MY_Start_KEY"
 		},
 	}
 
-	cli, _ := docker.NewClientWithOpts(docker.FromEnv)
+	cli, err := docker.NewClientWithOpts(
+		docker.FromEnv,
+		docker.WithVersion("1.48"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	w, err := NewWorker(testCtx, cli, "alpine:latest", spec)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
@@ -221,30 +227,30 @@ echo "My Key is $MY_Start_KEY"
 }
 
 func TestWorker_Network_Operations(t *testing.T) {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv)
+	cli, err := docker.NewClientWithOpts(
+		docker.FromEnv,
+		docker.WithVersion("1.48"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// 1. Create a temporary network
 	netName := "test-worker-net-" + strings.ToLower(testWorker.Alias())
 	netResp, err := cli.NetworkCreate(testCtx, netName, network.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create temp network: %v", err)
 	}
-	// Ensure network cleanup
+
 	defer func() {
 		_ = cli.NetworkRemove(context.Background(), netResp.ID)
 	}()
 
-	// 2. Connect the existing testWorker to this network
 	netAlias := "worker-net-alias"
 	err = testWorker.ConnectToNetwork(testCtx, netName, netAlias)
 	if err != nil {
 		t.Fatalf("Failed to connect to network: %v", err)
 	}
 
-	// 3. Verify connection by inspecting the container
 	containerJSON, err := cli.ContainerInspect(testCtx, testWorker.ID())
 	if err != nil {
 		t.Fatalf("Failed to inspect container: %v", err)
@@ -254,18 +260,84 @@ func TestWorker_Network_Operations(t *testing.T) {
 		t.Errorf("Container is not attached to network %s", netName)
 	}
 
-	// 4. Disconnect
 	err = testWorker.DisconnectFromNetwork(testCtx, netName)
 	if err != nil {
 		t.Fatalf("Failed to disconnect from network: %v", err)
 	}
 
-	// 5. Verify disconnection
 	containerJSON, err = cli.ContainerInspect(testCtx, testWorker.ID())
 	if err != nil {
 		t.Fatalf("Failed to inspect container: %v", err)
 	}
 	if _, ok := containerJSON.NetworkSettings.Networks[netName]; ok {
 		t.Errorf("Container is still attached to network %s after disconnect", netName)
+	}
+}
+func TestWorker_NetworkManager_Integration(t *testing.T) {
+
+	ctx := context.Background()
+	cli, err := docker.NewClientWithOpts(
+		docker.FromEnv,
+		docker.WithVersion("1.48"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aliasA := "manager-node-a"
+	aliasB := "manager-node-b"
+
+	specA := types.NodeSpec{Alias: aliasA}
+	workerA, err := NewWorker(ctx, cli, "alpine:latest", specA)
+	if err != nil {
+		t.Fatalf("Failed to create Worker A: %v", err)
+	}
+	defer workerA.Stop(context.Background())
+
+	specB := types.NodeSpec{Alias: aliasB}
+	workerB, err := NewWorker(ctx, cli, "alpine:latest", specB)
+	if err != nil {
+		t.Fatalf("Failed to create Worker B: %v", err)
+	}
+	defer workerB.Stop(context.Background())
+
+	netManager := NewDockerNetworkManager(cli)
+
+	workers := []WorkerInterface{workerA, workerB}
+	cleanup, netName, err := netManager.CreateAndConnect(ctx, workers)
+	if err != nil {
+		t.Fatalf("NetworkManager failed to connect workers: %v", err)
+	}
+
+	defer cleanup()
+
+	t.Logf("Network Manager created network: %s", netName)
+
+	t.Logf("Attempting to ping %s from %s...", aliasB, aliasA)
+
+	var bufA bytes.Buffer
+	err = workerA.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasB),
+		OutputWriter: &bufA,
+	})
+
+	if err != nil {
+		t.Fatalf("Worker A failed to ping Worker B. Error: %v\nOutput:\n%s", err, bufA.String())
+	}
+
+	if !strings.Contains(bufA.String(), "0% packet loss") {
+		t.Errorf("Ping output did not indicate success:\n%s", bufA.String())
+	}
+
+	t.Logf("Attempting to ping %s from %s...", aliasA, aliasB)
+
+	var bufB bytes.Buffer
+	err = workerB.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasA),
+		OutputWriter: &bufB,
+	})
+
+	if err != nil {
+		t.Fatalf("Worker B failed to ping Worker A. Error: %v\nOutput:\n%s", err, bufB.String())
 	}
 }
