@@ -1,7 +1,10 @@
 package worker
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -12,6 +15,7 @@ import (
 	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
+	t "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
@@ -151,7 +155,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	workers, err := d.requestWorkers(ctx, job)
 	if err != nil {
 		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to reserve workers: %w", err), "")
+		session.FinishFail(jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("failed to reserve workers: %w", err), "")
 		return
 	}
 
@@ -160,7 +164,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	cleanup, _, netErr := d.networkManager.CreateAndConnect(jobCtx, workers)
 	if netErr != nil {
 		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to set up network: %w", netErr), "")
+		session.FinishFail(jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("failed to set up network: %w", netErr), "")
 		return
 	}
 	defer func() {
@@ -172,7 +176,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	workerSpec, err := d.pairWorkerSpecs(workers, job.Nodes)
 	if err != nil {
 		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to pair workers and specs: %w", err), "")
+		session.FinishFail(jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("failed to pair workers and specs: %w", err), "")
 		return
 	}
 
@@ -181,14 +185,26 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 
 	if !compiledSuccess {
 		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeCompilationError, compileErr, failedWorker)
+		session.FinishFail(jobsession.JobArtifacts{}, types.OutcomeCompilationError, compileErr, failedWorker)
 		return
 	}
 
 	session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
 	execErr := d.executeAll(jobCtx, session, workerSpec, jc)
 
+	testContainer := d.getTestWorker(workers)
+	testContainer.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          "ls -R",
+		OutputWriter: session.NewLogWriter(testContainer.Alias()),
+	})
+
 	testResults = d.collectTestResults(ctx, workers)
+	testLogs := d.collectTestLogs(ctx, workers)
+
+	jobArtifacts := jobsession.JobArtifacts{
+		TestResults: testResults,
+		TestLogs:    testLogs,
+	}
 
 	d.mu.Lock()
 	canceledByUser := jc.CanceledByUser
@@ -196,16 +212,16 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 
 	if canceledByUser {
 		d.metricsCollector.IncJobCanceled()
-		session.FinishFail(testResults, types.OutcomeCancel, errors.New("job canceled by user"), "")
+		session.FinishFail(jobArtifacts, types.OutcomeCancel, errors.New("job canceled by user"), "")
 	} else if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
 		d.metricsCollector.IncJobTimeout()
-		session.FinishFail(testResults, types.OutcomeTimeout, fmt.Errorf("job timed out after %ds", job.Timeout), "")
+		session.FinishFail(jobArtifacts, types.OutcomeTimeout, fmt.Errorf("job timed out after %ds", job.Timeout), "")
 	} else if execErr != nil {
 		d.metricsCollector.IncJobFailure()
-		session.FinishFail(testResults, types.OutcomeFailed, execErr, "")
+		session.FinishFail(jobArtifacts, types.OutcomeFailed, execErr, "")
 	} else {
 		d.metricsCollector.IncJobSuccess()
-		session.FinishSuccess(testResults)
+		session.FinishSuccess(jobArtifacts)
 	}
 }
 
@@ -334,26 +350,70 @@ func (d *JobDispatcher) executeAll(
 	return nil
 }
 
-// collectTestResults helper to read json from the test container
-func (d *JobDispatcher) collectTestResults(ctx context.Context, workers []WorkerInterface) []dt.TestResult {
-	var testWorker WorkerInterface
+func (d *JobDispatcher) getTestWorker(workers []WorkerInterface) WorkerInterface {
 	for _, w := range workers {
 		if w.Alias() == "test-container" {
-			testWorker = w
-			break
+			return w
 		}
 	}
+	return nil
+}
 
+// collectTestResults helper to read json from the test container
+func (d *JobDispatcher) collectTestResults(ctx context.Context, workers []WorkerInterface) []dt.TestResult {
+	// 1. Find the worker (extracted to helper to avoid repetition)
+	testWorker := d.getTestWorker(workers)
 	if testWorker == nil {
 		return nil
 	}
 
-	testResults, err := testWorker.ReadTestResults(ctx, "app/tmp/test_results.json")
+	// 2. Read raw bytes
+	data, err := testWorker.ReadFile(ctx, "app/tmp/test_results.json")
 	if err != nil {
-		log.Logger.Warnf("Failed to read test results: %v", err)
+		log.Logger.Warnf("Failed to read test results file: %v", err)
 		return nil
 	}
-	return testResults
+
+	// 3. Parse Standard JSON (Array of objects)
+	var results []dt.TestResult
+	if err := json.Unmarshal(data, &results); err != nil {
+		log.Logger.Errorf("Failed to unmarshal test results: %v", err)
+		return nil
+	}
+
+	return results
+}
+
+func (d *JobDispatcher) collectTestLogs(ctx context.Context, workers []WorkerInterface) []t.LogEntry {
+	testWorker := d.getTestWorker(workers)
+	if testWorker == nil {
+		return nil
+	}
+
+	data, err := testWorker.ReadFile(ctx, "app/tmp/trace_log.jsonl")
+	if err != nil {
+		log.Logger.Warnf("Failed to read logs: %v", err)
+		return nil
+	}
+
+	var logs []t.LogEntry
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+
+		var entry t.LogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			log.Logger.Warnf("Skipping malformed log line: %v", err)
+			continue
+		}
+		logs = append(logs, entry)
+	}
+
+	return logs
 }
 
 // Reserve workers with retry
