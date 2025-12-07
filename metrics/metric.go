@@ -6,6 +6,8 @@ type JobMetricsCollector interface {
 	IncJobFailure()
 	IncJobCanceled()
 	IncJobTimeout()
+	IncCurrentJobs()
+	DecCurrentJobs()
 	ObserveJobDuration(seconds float64)
 	JSON() []byte
 }

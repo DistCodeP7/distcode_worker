@@ -90,7 +90,9 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 			return
 		case job := <-d.jobChannel:
 			d.activeJobsWg.Go(func() {
+				d.metricsCollector.IncCurrentJobs()
 				d.processJob(ctx, job)
+				d.metricsCollector.DecCurrentJobs()
 			})
 		case cancelReq := <-d.cancelJobChan:
 			go d.cancelJob(cancelReq)
