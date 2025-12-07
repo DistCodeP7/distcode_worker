@@ -76,3 +76,7 @@ func (m *InMemoryMetricsCollector) JSON() []byte {
 	b, _ := json.MarshalIndent(data, "", "  ")
 	return b
 }
+
+func (m *InMemoryMetricsCollector) PartName() string {
+	return "in_memory_metrics"
+}

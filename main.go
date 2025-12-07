@@ -2,8 +2,10 @@ package main
 
 import (
 	"github.com/DistCodeP7/distcode_worker/db"
+	"github.com/DistCodeP7/distcode_worker/endpoints"
+	"github.com/DistCodeP7/distcode_worker/endpoints/health"
+	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/log"
-	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/mq"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
@@ -42,16 +44,13 @@ func main() {
 		ResultsCh:    resultsCh,
 	})
 
-	db, err := db.NewPostgresRepository(appResources.Ctx)
-	if err != nil {
-		log.Logger.WithError(err).Fatal("Failed to connect to database")
-	} else {
-		log.Logger.Info("Connected to database")
-	}
-	defer db.Close()
+	healthRegister := health.NewHealthServiceRegister()
+	healthRegister.Register(appResources.DB)
 	// Serve a metrics endpoint
 	m := metrics.NewInMemoryMetricsCollector()
-	server := metrics.NewHTTPServer(":8001", m)
+	mm := endpoints.NewManager().Register(m)
+
+	server := endpoints.NewHTTPServer(":8001", mm, healthRegister)
 	go server.Run(appResources.Ctx)
 
 	wp := worker.NewDockerWorkerProducer(appResources.DockerCli, workerImageName)
@@ -67,7 +66,7 @@ func main() {
 		resultsCh,
 		wm,
 		worker.NewDockerNetworkManager(appResources.DockerCli),
-		db,
+		db.NewJobRepository(appResources.DB),
 		m,
 	)
 

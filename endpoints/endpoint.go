@@ -1,24 +1,29 @@
-package metrics
+package endpoints
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/DistCodeP7/distcode_worker/endpoints/health"
 )
 
 // HTTPServer wraps an HTTP listener serving JSON metrics.
 type HTTPServer struct {
-	addr    string
-	metrics JobMetricsCollector
-	server  *http.Server
+	addr           string
+	metrics        Manager
+	healthRegister *health.HealthServiceRegister
+	server         *http.Server
 }
 
 // NewHTTPServer creates a new server instance.
-func NewHTTPServer(addr string, metrics JobMetricsCollector) *HTTPServer {
+func NewHTTPServer(addr string, metrics Manager, healthRegister *health.HealthServiceRegister) *HTTPServer {
 	return &HTTPServer{
-		addr:    addr,
-		metrics: metrics,
+		addr:           addr,
+		metrics:        metrics,
+		healthRegister: healthRegister,
 	}
 }
 
@@ -27,7 +32,24 @@ func (s *HTTPServer) Run(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(s.metrics.JSON())
+		w.Write(s.metrics.AggregateJSON())
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		overallHealthy := s.healthRegister.OverallStatus()
+
+		if overallHealthy {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"healthy"}`))
+			return
+		}
+
+		healthStatus := s.healthRegister.CheckAll()
+		w.WriteHeader(http.StatusServiceUnavailable)
+		encoder := json.NewEncoder(w)
+		if err := encoder.Encode(healthStatus); err != nil {
+			log.Printf("Failed to encode health status: %v", err)
+		}
 	})
 
 	s.server = &http.Server{
@@ -37,6 +59,7 @@ func (s *HTTPServer) Run(ctx context.Context) {
 
 	go func() {
 		log.Printf("Serving metrics at http://%s/metrics", s.addr)
+		log.Printf("Serving health at http://%s/health", s.addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}

@@ -4,48 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // JobRepository defines the methods to interact with the database
-type JobRepository interface {
+type JobStore interface {
 	SaveResult(ctx context.Context, jobID uuid.UUID, outcome types.Outcome, testResults []dt.TestResult, logs []types.LogEvent, startTime time.Time) error
-	Close()
 }
 
-type PostgresRepository struct {
-	pool *pgxpool.Pool
+type JobRepository struct {
+	pool Repository
 }
 
-// NewPostgresRepository creates a new PostgresRepository
-func NewPostgresRepository(ctx context.Context) (*PostgresRepository, error) {
-	connString := os.Getenv("DB_URL")
-	pool, err := pgxpool.New(ctx, connString)
-	if err != nil {
-		return nil, fmt.Errorf("unable to connect to database: %w", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("database ping failed: %w", err)
-	}
-
-	return &PostgresRepository{pool: pool}, nil
-}
-
-// Close closes the database connection
-func (r *PostgresRepository) Close() {
-	r.pool.Close()
+// NewJobRepository creates a new JobRepository using an existing PostgresRepository
+func NewJobRepository(pool Repository) *JobRepository {
+	return &JobRepository{pool: pool}
 }
 
 // SaveResult send a job result to the database
-func (r *PostgresRepository) SaveResult(
+func (jr *JobRepository) SaveResult(
 	ctx context.Context,
 	jobID uuid.UUID,
 	outcome types.Outcome,
@@ -84,7 +66,7 @@ func (r *PostgresRepository) SaveResult(
 			finished_at = NOW() 
 		WHERE job_uid = $5`
 
-	_, err = r.pool.Exec(ctx, query,
+	_, err = jr.pool.Exec(ctx, query,
 		string(outcomeJSON),
 		string(resultsJSON),
 		duration,
