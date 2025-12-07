@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/db"
+	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
-	"github.com/DistCodeP7/distcode_worker/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/google/uuid"
@@ -40,14 +40,15 @@ type JobDispatcher struct {
 	cancelJobChan    <-chan types.CancelJobRequest
 	jobChannel       <-chan types.Job
 	resultsChannel   chan<- types.StreamingJobEvent
-	db               db.JobRepository
+	jobStore         db.JobStore
 	workerManager    WorkerManagerInterface
 	networkManager   NetworkManagerInterface
 	metricsCollector metrics.JobMetricsCollector
 	clock            clockwork.Clock
 
-	mu         sync.Mutex
-	activeJobs map[string]*JobCancellation
+	mu           sync.Mutex
+	activeJobs   map[string]*JobCancellation
+	activeJobsWg sync.WaitGroup
 }
 
 func NewJobDispatcher(
@@ -56,7 +57,7 @@ func NewJobDispatcher(
 	resultsChannel chan<- types.StreamingJobEvent,
 	workerManager WorkerManagerInterface,
 	networkManager NetworkManagerInterface,
-	db db.JobRepository,
+	jobStore db.JobStore,
 	metricsCollector metrics.JobMetricsCollector,
 	opts ...func(*JobDispatcher),
 ) *JobDispatcher {
@@ -66,7 +67,7 @@ func NewJobDispatcher(
 		resultsChannel:   resultsChannel,
 		workerManager:    workerManager,
 		networkManager:   networkManager,
-		db:               db,
+		jobStore:         jobStore,
 		metricsCollector: metricsCollector,
 		clock:            clockwork.NewRealClock(),
 		activeJobs:       make(map[string]*JobCancellation),
@@ -83,9 +84,16 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Logger.Info("Dispatcher stopping, waiting for active jobs to finish...")
+			d.activeJobsWg.Wait()
+			log.Logger.Info("All jobs finished. Dispatcher exiting.")
 			return
 		case job := <-d.jobChannel:
-			go d.processJob(ctx, job)
+			d.activeJobsWg.Go(func() {
+				d.metricsCollector.IncCurrentJobs()
+				d.processJob(ctx, job)
+				d.metricsCollector.DecCurrentJobs()
+			})
 		case cancelReq := <-d.cancelJobChan:
 			go d.cancelJob(cancelReq)
 		}
@@ -125,7 +133,7 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	defer func() {
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := d.db.SaveResult(
+		err := d.jobStore.SaveResult(
 			saveCtx,
 			job.JobUID,
 			session.GetOutcome(),

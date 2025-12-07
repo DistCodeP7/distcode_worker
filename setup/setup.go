@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/db"
 	"github.com/DistCodeP7/distcode_worker/dockercli"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/docker/docker/api/types/container"
@@ -25,6 +26,7 @@ type AppResources struct {
 	DockerCli       dockercli.Client
 	WorkerImage     string
 	ControllerImage string
+	DB              db.Repository
 }
 
 // SetupApp initializes application resources required for running a worker.
@@ -65,6 +67,13 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 		return nil, err
 	}
 
+	db, err := db.NewPostgresRepository(ctx)
+	if err != nil {
+		log.Logger.WithError(err).Fatal("Failed to connect to database")
+	} else {
+		log.Logger.Info("Connected to database")
+	}
+
 	log.Logger.WithFields(logrus.Fields{
 		"worker_image":     effectiveWorkerImage,
 		"controller_image": effectiveControllerImage,
@@ -76,6 +85,7 @@ func SetupApp(workerImageName string, controllerImageName string) (*AppResources
 		DockerCli:       cli,
 		WorkerImage:     effectiveWorkerImage,
 		ControllerImage: effectiveControllerImage,
+		DB:              db,
 	}, nil
 }
 

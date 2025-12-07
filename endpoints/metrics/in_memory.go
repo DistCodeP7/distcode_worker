@@ -8,6 +8,7 @@ import (
 
 type InMemoryMetricsCollector struct {
 	mu            sync.Mutex
+	CurrentJobs   int64
 	JobTotal      int64
 	JobSuccess    int64
 	JobFailure    int64
@@ -23,13 +24,22 @@ func NewInMemoryMetricsCollector() *InMemoryMetricsCollector {
 	}
 }
 
+var _ JobMetricsCollector = (*InMemoryMetricsCollector)(nil)
+
 // Helper to lock and increment to ensure code is clean
 func (m *InMemoryMetricsCollector) inc(field *int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	*field++
 }
+func (m *InMemoryMetricsCollector) dec(field *int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	*field--
+}
 
+func (m *InMemoryMetricsCollector) DecCurrentJobs() { m.dec(&m.CurrentJobs) }
+func (m *InMemoryMetricsCollector) IncCurrentJobs() { m.inc(&m.CurrentJobs) }
 func (m *InMemoryMetricsCollector) IncJobTotal()    { m.inc(&m.JobTotal) }
 func (m *InMemoryMetricsCollector) IncJobSuccess()  { m.inc(&m.JobSuccess) }
 func (m *InMemoryMetricsCollector) IncJobFailure()  { m.inc(&m.JobFailure) }
@@ -52,6 +62,7 @@ func (m *InMemoryMetricsCollector) JSON() []byte {
 	}
 
 	data := map[string]interface{}{
+		"current_jobs":      m.CurrentJobs,
 		"job_total":         m.JobTotal,
 		"job_success":       m.JobSuccess,
 		"job_failure":       m.JobFailure,
@@ -64,4 +75,8 @@ func (m *InMemoryMetricsCollector) JSON() []byte {
 	}
 	b, _ := json.MarshalIndent(data, "", "  ")
 	return b
+}
+
+func (m *InMemoryMetricsCollector) PartName() string {
+	return "in_memory_metrics"
 }

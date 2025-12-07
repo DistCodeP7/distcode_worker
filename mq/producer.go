@@ -9,17 +9,11 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type EventType string
-
-const (
-	EventTypeResults EventType = "results"
-)
-
 // PublishStreamingEvents establishes a long-lived connection and channel to RabbitMQ
 // and continuously publishes events received from the 'events' channel.
 // It uses ReconnectorRabbitMQ to automatically handle reconnections on failure.
-func PublishStreamingEvents(ctx context.Context, eventType EventType, events <-chan types.StreamingJobEvent) error {
-	queueName := string(eventType)
+func PublishStreamingEvents(ctx context.Context, events <-chan types.StreamingJobEvent) error {
+	queueName := "results"
 	url := "amqp://guest:guest@localhost:5672/"
 
 	return ReconnectorRabbitMQ(ctx, url, queueName,
