@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	t "github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/google/uuid"
 )
 
@@ -26,7 +26,11 @@ func NewWorkerManager(maxWorkers int, workerFactory WorkerProducer) (*WorkerMana
 	return manager, nil
 }
 
-func (wm *WorkerManager) ReserveWorkers(jobID uuid.UUID, specs []t.NodeSpec) ([]WorkerInterface, error) {
+func (wm *WorkerManager) ReserveWorkers(
+	jobID uuid.UUID,
+	testSpec types.NodeSpec,
+	submissionSpecs []types.NodeSpec,
+) (WorkUnit, []WorkUnit, error) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -36,26 +40,41 @@ func (wm *WorkerManager) ReserveWorkers(jobID uuid.UUID, specs []t.NodeSpec) ([]
 		current += len(workers)
 	}
 
-	if current+len(specs) > wm.maxWorkers {
-		return nil, fmt.Errorf("worker limit exceeded: current=%d, requested=%d, max=%d",
-			current, len(specs), wm.maxWorkers)
+	totalRequested := 1 + len(submissionSpecs)
+	if current+totalRequested > wm.maxWorkers {
+		return WorkUnit{}, nil, fmt.Errorf("worker limit exceeded: current=%d, requested=%d, max=%d",
+			current, totalRequested, wm.maxWorkers)
 	}
 
-	workers, err := wm.workerProducer.NewWorkers(context.Background(), specs)
+	nodeOrder := append([]types.NodeSpec{testSpec}, submissionSpecs...)
+	workers, err := wm.workerProducer.NewWorkers(context.Background(), nodeOrder)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create workers for job %d: %w", jobID, err)
+		return WorkUnit{}, nil, fmt.Errorf("failed to create workers for job %d: %w", jobID, err)
 	}
 
 	wm.jobs[jobID.String()] = workers
 
-	return workers, nil
+	testUnit := WorkUnit{
+		Spec:   testSpec,
+		Worker: workers[0],
+	}
+
+	// Indices 1..N are the Submission Containers
+	submissionUnits := make([]WorkUnit, len(submissionSpecs))
+	for i, spec := range submissionSpecs {
+		submissionUnits[i] = WorkUnit{
+			Spec:   spec,
+			Worker: workers[i+1], // Offset by 1
+		}
+	}
+
+	return testUnit, submissionUnits, nil
 }
 
 func (wm *WorkerManager) removeWorkers(workers []WorkerInterface) error {
 	// Create waitgroup to stop workers concurrently
 	var wg sync.WaitGroup
 	errors := make(chan error, len(workers))
-	defer close(errors)
 
 	for _, w := range workers {
 		wg.Go(func() {
@@ -66,6 +85,7 @@ func (wm *WorkerManager) removeWorkers(workers []WorkerInterface) error {
 	}
 
 	wg.Wait()
+	close(errors)
 
 	if len(errors) > 0 {
 		return fmt.Errorf("failed to stop some workers: %v", errors)
