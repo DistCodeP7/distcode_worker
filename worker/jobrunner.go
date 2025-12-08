@@ -95,13 +95,33 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 
 	if r.debugEnabled {
 		r.Session.SetPhase(types.PhaseDebugging, "Debugging enabled. Dumping go.mod and file tree...")
-		r.ExecuteCommandOnAllUnits("cat go.mod && ls -R")
+		_ = r.ExecuteCommandOnAllUnits("cat go.mod && ls -R")
 	}
 
 	r.Session.SetPhase(types.PhaseCompiling, "Compiling code...")
 	compileSuccess, failedWorker, compileErr := r.compileAll()
+
+	// Handle cancel/timeout BEFORE treating it as a plain compilation error
 	if !compileSuccess {
-		return jobsession.JobArtifacts{}, types.OutcomeCompilationError, fmt.Errorf("compilation failed on %s: %w", failedWorker, compileErr)
+		r.mu.Lock()
+		userCancelled := r.canceledByUser
+		r.mu.Unlock()
+
+		// User explicitly cancelled
+		if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
+			return jobsession.JobArtifacts{}, types.OutcomeCancel,
+				errors.New("job canceled by user")
+		}
+
+		// Context timed out during compile
+		if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
+			return jobsession.JobArtifacts{}, types.OutcomeTimeout,
+				fmt.Errorf("job timed out after %ds (during compilation)", r.Job.Timeout)
+		}
+
+		// Genuine compilation error
+		return jobsession.JobArtifacts{}, types.OutcomeCompilationError,
+			fmt.Errorf("compilation failed on %s: %w", failedWorker, compileErr)
 	}
 
 	r.Session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
@@ -109,16 +129,20 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 
 	r.Session.SetPhase(types.PhaseRunning, "Collecting artifacts...")
 	artifacts := r.collectArtifacts()
+
 	r.mu.Lock()
 	userCancelled := r.canceledByUser
 	r.mu.Unlock()
 
+	// Still necessary to check for user cancellation here as a user can
+	// cancel even after compilation succeeds.
 	if userCancelled {
 		return artifacts, types.OutcomeCancel, errors.New("job canceled by user")
 	}
 
 	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
-		return artifacts, types.OutcomeTimeout, fmt.Errorf("job timed out after %ds", r.Job.Timeout)
+		return artifacts, types.OutcomeTimeout,
+			fmt.Errorf("job timed out after %ds", r.Job.Timeout)
 	}
 
 	if execErr != nil {
