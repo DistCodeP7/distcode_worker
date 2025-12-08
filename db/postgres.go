@@ -6,12 +6,14 @@ import (
 	"os"
 
 	"github.com/DistCodeP7/distcode_worker/endpoints/health"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Repository interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 	Close()
 	health.HealthService
 }
@@ -42,6 +44,10 @@ func (r *PostgresRepository) Close() {
 
 func (r *PostgresRepository) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	return r.pool.Exec(ctx, sql, args...)
+}
+
+func (r *PostgresRepository) BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error) {
+	return r.pool.BeginTx(ctx, txOptions)
 }
 
 func (r *PostgresRepository) ping(ctx context.Context) error {

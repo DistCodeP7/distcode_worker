@@ -33,6 +33,7 @@ type JobRun struct {
 	mu              sync.Mutex
 	canceledByUser  bool
 	finished        bool
+	debugEnabled    bool
 }
 
 type WorkUnit struct {
@@ -62,6 +63,7 @@ func NewJobRun(
 		Session:         session,
 		ctx:             jobCtx,
 		cancel:          cancel,
+		debugEnabled:    true,
 	}
 }
 
@@ -91,6 +93,11 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 		r.cancel()
 	}()
 
+	if r.debugEnabled {
+		r.Session.SetPhase(types.PhaseDebugging, "Debugging enabled. Dumping go.mod and file tree...")
+		r.ExecuteCommandOnAllUnits("cat go.mod && ls -R")
+	}
+
 	r.Session.SetPhase(types.PhaseCompiling, "Compiling code...")
 	compileSuccess, failedWorker, compileErr := r.compileAll()
 	if !compileSuccess {
@@ -119,6 +126,39 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 	}
 
 	return artifacts, types.OutcomeSuccess, nil
+}
+
+func (r *JobRun) ExecuteCommandOnAllUnits(cmd string) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(r.AllUnits))
+
+	for _, unit := range r.AllUnits {
+		wg.Go(func() {
+			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
+			fmt.Fprintf(logWriter, "Executing command: %s\n", cmd)
+
+			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
+				Cmd:          cmd,
+				OutputWriter: logWriter,
+			})
+			if err != nil {
+				errCh <- fmt.Errorf("command execution failed on worker %s: %w", unit.Worker.ID()[:12], err)
+
+				// Fail Fast: If one node crashes, cancel the others to save resources
+				r.cancel()
+			}
+		})
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *JobRun) compileAll() (bool, string, error) {

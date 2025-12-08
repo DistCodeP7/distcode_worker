@@ -117,10 +117,10 @@ func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
 		UserID: s.userID,
 		Type:   types.TypeResult,
 		Result: &types.ResultEvent{
-			Outcome:     types.OutcomeSuccess,
-			DurationMs:  s.duration(),
-			TestResults: artifacts.TestResults,
-			//TODO ADD LOGS
+			Outcome:         types.OutcomeSuccess,
+			DurationMs:      s.duration(),
+			TestResults:     artifacts.TestResults,
+			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
 	}
 }
@@ -137,12 +137,12 @@ func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outc
 		UserID: s.userID,
 		Type:   types.TypeResult,
 		Result: &types.ResultEvent{
-			Outcome:        s.outcome,
-			DurationMs:     s.duration(),
-			Error:          errStr,
-			TestResults:    artifacts.TestResults,
-			FailedWorkerID: workerID,
-			//TODO ADD LOGS
+			Outcome:         s.outcome,
+			DurationMs:      s.duration(),
+			Error:           errStr,
+			TestResults:     artifacts.TestResults,
+			FailedWorkerID:  workerID,
+			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
 	}
 }

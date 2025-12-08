@@ -1,12 +1,14 @@
 package types
 
 import (
+	"github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 )
 
 type Phase string
 
 const (
+	PhaseDebugging Phase = "DEBUGGING"
 	PhasePending   Phase = "PENDING"
 	PhaseCompiling Phase = "COMPILING"
 	PhaseRunning   Phase = "RUNNING"
@@ -51,9 +53,10 @@ type StatusEvent struct {
 }
 
 type ResultEvent struct {
-	Outcome        Outcome         `json:"outcome"`
-	DurationMs     int64           `json:"duration_ms"`
-	TestResults    []dt.TestResult `json:"test_results,omitempty"`
-	FailedWorkerID string          `json:"failed_worker_id,omitempty"`
-	Error          string          `json:"error,omitempty"`
+	Outcome         Outcome            `json:"outcome"`
+	DurationMs      int64              `json:"duration_ms"`
+	TestResults     []dt.TestResult    `json:"test_results,omitempty"`
+	NodeMessageLogs []testing.LogEntry `json:"node_message_logs,omitempty"`
+	FailedWorkerID  string             `json:"failed_worker_id,omitempty"`
+	Error           string             `json:"error,omitempty"`
 }

@@ -153,6 +153,7 @@ func (d *JobDispatcher) finalizeJob(
 		outcome,
 		artifacts.TestResults,
 		session.GetBufferedLogs(),
+		artifacts.NodeMessageLogs,
 		session.StartTime(),
 	)
 
