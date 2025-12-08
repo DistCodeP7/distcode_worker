@@ -108,7 +108,7 @@ func (s *JobSessionLogger) duration() int64 {
 
 type JobArtifacts struct {
 	TestResults     []dt.TestResult
-	NodeMessageLogs []testing.LogEntry
+	NodeMessageLogs []testing.TraceEvent
 }
 
 func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
