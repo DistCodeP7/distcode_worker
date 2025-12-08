@@ -17,7 +17,7 @@ import (
 
 // Update Interface signature to accept nodeMessageLogs
 type JobStore interface {
-	SaveResult(ctx context.Context, jobID uuid.UUID, outcome types.Outcome, testResults []dt.TestResult, logs []types.LogEvent, nodeMessageLogs []t.LogEntry, startTime time.Time) error
+	SaveResult(ctx context.Context, jobID uuid.UUID, outcome types.Outcome, testResults []dt.TestResult, logs []types.LogEvent, nodeMessageLogs []t.TraceEvent, startTime time.Time) error
 }
 
 type JobRepository struct {
@@ -34,7 +34,7 @@ func (jr *JobRepository) SaveResult(
 	outcome types.Outcome,
 	testResults []dt.TestResult,
 	logs []types.LogEvent,
-	nodeMessageLogs []t.LogEntry,
+	nodeMessageLogs []t.TraceEvent,
 	startTime time.Time,
 ) error {
 	if testResults == nil {
@@ -87,8 +87,8 @@ func (jr *JobRepository) SaveResult(
 	if len(nodeMessageLogs) > 0 {
 		insertQuery := `
 			INSERT INTO job_process_messages 
-			(job_uid, timestamp, "from", "to", type, vector_clock, payload)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`
+			(job_uid, timestamp, "from", "to", event_type, message_type, vector_clock, payload, message_id, event_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
 		for _, msg := range nodeMessageLogs {
 			vcJSON, err := json.Marshal(msg.VectorClock)
@@ -101,9 +101,12 @@ func (jr *JobRepository) SaveResult(
 				msg.Timestamp,
 				msg.From,
 				msg.To,
-				msg.Type,
+				msg.EvtType,
+				msg.MsgType,
 				string(vcJSON),
 				msg.Payload,
+				msg.MessageID,
+				msg.ID,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert node message log: %w", err)

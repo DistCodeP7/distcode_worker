@@ -3,7 +3,7 @@ module github.com/DistCodeP7/distcode_worker
 go 1.25.0
 
 require (
-	github.com/distcodep7/dsnet v0.0.8
+	github.com/distcodep7/dsnet v0.0.9-0.20251208183007-70fd6ede801f
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6

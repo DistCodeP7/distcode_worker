@@ -262,13 +262,16 @@ func (r *JobRun) executeAll() error {
 
 func (r *JobRun) collectArtifacts() jobsession.JobArtifacts {
 	var results []dt.TestResult
-	var logs []t.LogEntry
+	var logs []t.TraceEvent
+	var logsMu sync.Mutex
 	var wg sync.WaitGroup
 
-	tw := r.TestUnit.Worker
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
 	wg.Go(func() {
-		data, err := tw.ReadFile(r.ctx, "app/tmp/test_results.json")
+		tw := r.TestUnit.Worker
+		data, err := tw.ReadFile(ctx, "app/tmp/test_results.json")
 		if err == nil {
 			if jsonErr := json.Unmarshal(data, &results); jsonErr != nil {
 				log.Logger.Errorf("Failed to unmarshal test results JSON: %v", jsonErr)
@@ -276,22 +279,31 @@ func (r *JobRun) collectArtifacts() jobsession.JobArtifacts {
 		}
 	})
 
-	wg.Go(func() {
-		logData, err := tw.ReadFile(r.ctx, "app/tmp/trace_log.jsonl")
-		if err == nil {
+	for _, unit := range r.AllUnits {
+		wg.Go(func() {
+			logData, err := unit.Worker.ReadFile(ctx, "app/tmp/trace_log.jsonl")
+			if err != nil {
+				return
+			}
+
+			var workerLogs []t.TraceEvent
 			scanner := bufio.NewScanner(bytes.NewReader(logData))
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
 				}
-				var entry t.LogEntry
+				var entry t.TraceEvent
 				if json.Unmarshal(line, &entry) == nil {
-					logs = append(logs, entry)
+					workerLogs = append(workerLogs, entry)
 				}
 			}
-		}
-	})
+
+			logsMu.Lock()
+			logs = append(logs, workerLogs...)
+			logsMu.Unlock()
+		})
+	}
 
 	wg.Wait()
 
