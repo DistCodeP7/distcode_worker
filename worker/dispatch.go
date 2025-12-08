@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,14 +11,13 @@ import (
 	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
-	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 )
 
 // WorkerManagerInterface manages worker reservation and lifecycle
 type WorkerManagerInterface interface {
-	ReserveWorkers(jobID uuid.UUID, specs []types.NodeSpec) ([]WorkerInterface, error)
+	ReserveWorkers(jobID uuid.UUID, testSpec types.NodeSpec, submissionSpecs []types.NodeSpec) (WorkUnit, []WorkUnit, error)
 	ReleaseJob(jobID uuid.UUID) error
 	Shutdown() error
 }
@@ -27,12 +25,6 @@ type WorkerManagerInterface interface {
 // NetworkManagerInterface creates and connects workers to a network
 type NetworkManagerInterface interface {
 	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkName string, err error)
-}
-
-// JobCancellation holds per-job cancel func and a flag for user cancellation
-type JobCancellation struct {
-	Cancel         context.CancelFunc
-	CanceledByUser bool
 }
 
 // JobDispatcher orchestrates job execution across workers
@@ -47,7 +39,7 @@ type JobDispatcher struct {
 	clock            clockwork.Clock
 
 	mu           sync.Mutex
-	activeJobs   map[string]*JobCancellation
+	activeJobs   map[string]*JobRun
 	activeJobsWg sync.WaitGroup
 }
 
@@ -70,7 +62,7 @@ func NewJobDispatcher(
 		jobStore:         jobStore,
 		metricsCollector: metricsCollector,
 		clock:            clockwork.NewRealClock(),
-		activeJobs:       make(map[string]*JobCancellation),
+		activeJobs:       make(map[string]*JobRun),
 	}
 
 	for _, opt := range opts {
@@ -100,303 +92,128 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 	}
 }
 
-// Cancel a running job: mark as user-cancelled then call cancel func
+// processJob orchestrates the lifecycle strictly and linearly
+func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
+	log.Logger.Infof("Starting job %s", job.JobUID.String())
+	d.metricsCollector.IncJobTotal()
+
+	session := jobsession.NewJobSession(job, d.resultsChannel)
+	session.SetPhase(types.PhasePending, "Initializing...")
+
+	session.SetPhase(types.PhasePending, "Reserving workers...")
+	testUnit, submissionUnits, err := d.requestWorkers(ctx, job)
+	if err != nil {
+		d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("worker reservation failed: %w", err))
+		return
+	}
+	defer d.workerManager.ReleaseJob(job.JobUID)
+	session.SetPhase(types.PhasePending, "Configuring network...")
+
+	submissionWorkers := make([]WorkerInterface, len(submissionUnits))
+	for i, unit := range submissionUnits {
+		submissionWorkers[i] = unit.Worker
+	}
+
+	cleanupNet, _, err := d.networkManager.CreateAndConnect(ctx, append([]WorkerInterface{testUnit.Worker}, submissionWorkers...))
+	if err != nil {
+		d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("network setup failed: %w", err))
+		return
+	}
+	defer cleanupNet()
+
+	jobRun := NewJobRun(ctx, job, testUnit, submissionUnits, session)
+	d.registerActiveJob(jobRun)
+	defer d.unregisterActiveJob(job.JobUID)
+
+	artifacts, outcome, err := jobRun.Execute()
+	d.finalizeJob(job, session, artifacts, outcome, err)
+}
+
+// finalizeJob updates session state, metrics, and persists results
+func (d *JobDispatcher) finalizeJob(
+	job types.Job,
+	session *jobsession.JobSessionLogger,
+	artifacts jobsession.JobArtifacts,
+	outcome types.Outcome,
+	err error,
+) {
+	if outcome == types.OutcomeSuccess {
+		session.FinishSuccess(artifacts)
+	} else {
+		session.FinishFail(artifacts, outcome, err, "")
+	}
+
+	d.updateMetrics(outcome)
+	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	saveErr := d.jobStore.SaveResult(
+		saveCtx,
+		job.JobUID,
+		outcome,
+		artifacts.TestResults,
+		session.GetBufferedLogs(),
+		artifacts.NodeMessageLogs,
+		session.StartTime(),
+	)
+
+	if saveErr != nil {
+		log.Logger.Errorf("Failed to save job results to DB: %v", saveErr)
+	}
+}
+
+func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) (WorkUnit, []WorkUnit, error) {
+	for {
+		testWorker, submissionWorkers, err := d.workerManager.ReserveWorkers(job.JobUID, job.TestNode, job.SubmissionNodes)
+		if err == nil {
+			return testWorker, submissionWorkers, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return WorkUnit{}, nil, ctx.Err()
+		case <-d.clock.After(200 * time.Millisecond):
+			// Retry loop
+		}
+	}
+}
+
+func (d *JobDispatcher) updateMetrics(outcome types.Outcome) {
+	switch outcome {
+	case types.OutcomeSuccess:
+		d.metricsCollector.IncJobSuccess()
+	case types.OutcomeCancel:
+		d.metricsCollector.IncJobCanceled()
+	case types.OutcomeTimeout:
+		d.metricsCollector.IncJobTimeout()
+	default:
+		d.metricsCollector.IncJobFailure()
+	}
+}
+
+// registerActiveJob adds the job to active tracking
+func (d *JobDispatcher) registerActiveJob(run *JobRun) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.activeJobs[run.ID.String()] = run
+}
+
+// unregisterActiveJob removes the job from active tracking
+func (d *JobDispatcher) unregisterActiveJob(id uuid.UUID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.activeJobs, id.String())
+}
+
+// CancelJob delegates cancellation to the specific JobRun
 func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
 	d.mu.Lock()
-	jc, ok := d.activeJobs[req.JobUID.String()]
+	jobRun, ok := d.activeJobs[req.JobUID.String()]
 	d.mu.Unlock()
 
 	if !ok {
 		log.Logger.Warnf("Cancel request for unknown or completed job: %s", req.JobUID.String())
 		return
 	}
-
-	d.mu.Lock()
-	if jc != nil {
-		jc.CanceledByUser = true
-		if jc.Cancel != nil {
-			jc.Cancel()
-		}
-	}
-	d.mu.Unlock()
-}
-
-// processJob is the top-level orchestration
-func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
-	log.Logger.Infof("Starting job %s", job.JobUID.String())
-	d.metricsCollector.IncJobTotal()
-
-	session := jobsession.NewJobSession(job, d.resultsChannel)
-	session.SetPhase(types.PhasePending, "Reserving workers...")
-
-	var testResults []dt.TestResult
-	defer func() {
-		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err := d.jobStore.SaveResult(
-			saveCtx,
-			job.JobUID,
-			session.GetOutcome(),
-			testResults,
-			session.GetBufferedLogs(),
-			session.StartTime(),
-		)
-
-		if err != nil {
-			log.Logger.Errorf("Failed to save job results to DB: %v", err)
-		}
-	}()
-
-	defer d.cleanupJob(job.JobUID)
-	workers, err := d.requestWorkers(ctx, job)
-	if err != nil {
-		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to reserve workers: %w", err), "")
-		return
-	}
-
-	jobCtx, jc := d.createJobContext(ctx, job)
-
-	cleanup, _, netErr := d.networkManager.CreateAndConnect(jobCtx, workers)
-	if netErr != nil {
-		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to set up network: %w", netErr), "")
-		return
-	}
-	defer func() {
-		if cleanup != nil {
-			cleanup()
-		}
-	}()
-
-	workerSpec, err := d.pairWorkerSpecs(workers, job.Nodes)
-	if err != nil {
-		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeFailed, fmt.Errorf("failed to pair workers and specs: %w", err), "")
-		return
-	}
-
-	session.SetPhase(types.PhaseCompiling, "Compiling code...")
-	compiledSuccess, failedWorker, compileErr := d.compileAll(jobCtx, session, workerSpec)
-
-	if !compiledSuccess {
-		d.metricsCollector.IncJobFailure()
-		session.FinishFail(nil, types.OutcomeCompilationError, compileErr, failedWorker)
-		return
-	}
-
-	session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
-	execErr := d.executeAll(jobCtx, session, workerSpec, jc)
-
-	testResults = d.collectTestResults(ctx, workers)
-
-	d.mu.Lock()
-	canceledByUser := jc.CanceledByUser
-	d.mu.Unlock()
-
-	if canceledByUser {
-		d.metricsCollector.IncJobCanceled()
-		session.FinishFail(testResults, types.OutcomeCancel, errors.New("job canceled by user"), "")
-	} else if errors.Is(jobCtx.Err(), context.DeadlineExceeded) {
-		d.metricsCollector.IncJobTimeout()
-		session.FinishFail(testResults, types.OutcomeTimeout, fmt.Errorf("job timed out after %ds", job.Timeout), "")
-	} else if execErr != nil {
-		d.metricsCollector.IncJobFailure()
-		session.FinishFail(testResults, types.OutcomeFailed, execErr, "")
-	} else {
-		d.metricsCollector.IncJobSuccess()
-		session.FinishSuccess(testResults)
-	}
-}
-
-type WorkUnit struct {
-	Spec   types.NodeSpec
-	Worker WorkerInterface
-}
-
-func (d *JobDispatcher) pairWorkerSpecs(worker []WorkerInterface, specs []types.NodeSpec) ([]WorkUnit, error) {
-	workerByAlias := make(map[string]WorkerInterface, len(worker))
-
-	for _, w := range worker {
-		workerByAlias[w.Alias()] = w
-	}
-
-	var workUnits []WorkUnit
-	for _, spec := range specs {
-		w, ok := workerByAlias[spec.Alias]
-		if !ok {
-			return nil, fmt.Errorf("no worker found for alias %s", spec.Alias)
-		}
-		workUnits = append(workUnits, WorkUnit{
-			Spec:   spec,
-			Worker: w,
-		})
-	}
-	return workUnits, nil
-}
-
-// compileAll runs build command on each worker sequentially/concurrently and streams logs
-func (d *JobDispatcher) compileAll(
-	ctx context.Context,
-	session *jobsession.JobSessionLogger,
-	workUnits []WorkUnit,
-) (bool, string, error) {
-
-	var wg sync.WaitGroup
-	type buildResult struct {
-		workerID string
-		err      error
-	}
-	results := make(chan buildResult, len(workUnits))
-
-	for _, workUnit := range workUnits {
-		if workUnit.Spec.BuildCommand == "" {
-			continue
-		}
-
-		wg.Add(1)
-		go func(w WorkerInterface, s types.NodeSpec) {
-			defer wg.Done()
-
-			logWriter := session.NewLogWriter(w.Alias())
-			fmt.Fprintf(logWriter, "Running build: %s\n", s.BuildCommand)
-
-			err := w.ExecuteCommand(ctx, ExecuteCommandOptions{
-				Cmd:          s.BuildCommand,
-				OutputWriter: logWriter,
-			})
-
-			if err != nil {
-				results <- buildResult{workerID: w.ID(), err: err}
-			}
-		}(workUnit.Worker, workUnit.Spec)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// If any build fails, the whole job fails
-	for r := range results {
-		if r.err != nil {
-			return false, r.workerID, r.err
-		}
-	}
-
-	return true, "", nil
-}
-
-// executeAll runs all workers' entry commands concurrently and streams logs
-func (d *JobDispatcher) executeAll(
-	ctx context.Context,
-	session *jobsession.JobSessionLogger,
-	workUnits []WorkUnit,
-	jc *JobCancellation,
-) error {
-
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(workUnits))
-
-	for _, workUnit := range workUnits {
-
-		wg.Add(1)
-		go func(w WorkerInterface, s types.NodeSpec) {
-			defer wg.Done()
-
-			logWriter := session.NewLogWriter(w.Alias())
-			fmt.Fprintf(logWriter, "Executing: %s\n", s.EntryCommand)
-
-			err := w.ExecuteCommand(ctx, ExecuteCommandOptions{
-				Cmd:          s.EntryCommand,
-				OutputWriter: logWriter,
-			})
-			if err != nil {
-				fmt.Fprintf(logWriter, "Execution Error: %v\n", err)
-				errCh <- fmt.Errorf("execution failed on worker %s: %w", w.ID()[:12], err)
-
-				// Ensure we cancel the job context so other workers stop immediately
-				if jc != nil && jc.Cancel != nil {
-					jc.Cancel()
-				}
-			}
-		}(workUnit.Worker, workUnit.Spec)
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	for e := range errCh {
-		if e != nil {
-			return e
-		}
-	}
-	return nil
-}
-
-// collectTestResults helper to read json from the test container
-func (d *JobDispatcher) collectTestResults(ctx context.Context, workers []WorkerInterface) []dt.TestResult {
-	var testWorker WorkerInterface
-	for _, w := range workers {
-		if w.Alias() == "test-container" {
-			testWorker = w
-			break
-		}
-	}
-
-	if testWorker == nil {
-		return nil
-	}
-
-	testResults, err := testWorker.ReadTestResults(ctx, "app/tmp/test_results.json")
-	if err != nil {
-		log.Logger.Warnf("Failed to read test results: %v", err)
-		return nil
-	}
-	return testResults
-}
-
-// Reserve workers with retry
-func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) ([]WorkerInterface, error) {
-	for {
-		workers, err := d.workerManager.ReserveWorkers(job.JobUID, job.Nodes)
-		if err == nil {
-			return workers, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-d.clock.After(200 * time.Millisecond):
-			// Retry after delay
-		}
-	}
-}
-
-// Create a per-job context with timeout and register JobControl
-func (d *JobDispatcher) createJobContext(ctx context.Context, job types.Job) (context.Context, *JobCancellation) {
-	jobCtx, cancel := context.WithTimeout(ctx, time.Duration(job.Timeout)*time.Second)
-	jc := &JobCancellation{Cancel: cancel, CanceledByUser: false}
-
-	d.mu.Lock()
-	d.activeJobs[job.JobUID.String()] = jc
-	d.mu.Unlock()
-
-	return jobCtx, jc
-}
-
-// Cleanup job: remove from active jobs and release workers
-func (d *JobDispatcher) cleanupJob(jobUID uuid.UUID) {
-	d.mu.Lock()
-	jc, ok := d.activeJobs[jobUID.String()]
-	if ok {
-		if jc.Cancel != nil {
-			jc.Cancel()
-		}
-		delete(d.activeJobs, jobUID.String())
-	}
-	d.mu.Unlock()
-	if err := d.workerManager.ReleaseJob(jobUID); err != nil {
-		log.Logger.Errorf("Failed to release workers for job %s: %v", jobUID, err)
-	}
+	jobRun.Cancel(true)
 }

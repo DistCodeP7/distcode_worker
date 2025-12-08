@@ -72,7 +72,6 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 	}
 
 	peersEnv := createPeerAliasEnv(req.Nodes.Submission.ReplicaConfigs)
-	nodes := []types.NodeSpec{}
 
 	// Test Container Node
 	testNode := types.NodeSpec{
@@ -86,7 +85,8 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 			[]types.EnvironmentVariable{{Key: "ID", Value: req.Nodes.TestContainer.Alias}},
 		),
 	}
-	nodes = append(nodes, testNode)
+
+	nodes := []types.NodeSpec{}
 
 	// Submission Replicas
 	for _, replica := range req.Nodes.Submission.ReplicaConfigs {
@@ -107,9 +107,10 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 	}
 
 	return &types.Job{
-		JobUID:  jobUID,
-		UserID:  req.UserId,
-		Timeout: time.Duration(req.Timeout) * time.Second,
-		Nodes:   nodes,
+		JobUID:          jobUID,
+		UserID:          req.UserId,
+		Timeout:         time.Duration(req.Timeout) * time.Second,
+		TestNode:        testNode,
+		SubmissionNodes: nodes,
 	}, nil
 }

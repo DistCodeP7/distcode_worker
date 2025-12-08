@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/google/uuid"
 )
@@ -105,20 +106,26 @@ func (s *JobSessionLogger) duration() int64 {
 	return time.Since(s.startTime).Milliseconds()
 }
 
-func (s *JobSessionLogger) FinishSuccess(tests []dt.TestResult) {
+type JobArtifacts struct {
+	TestResults     []dt.TestResult
+	NodeMessageLogs []testing.LogEntry
+}
+
+func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
 	s.phase = types.PhaseCompleted
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
 		Type:   types.TypeResult,
 		Result: &types.ResultEvent{
-			Outcome:     types.OutcomeSuccess,
-			DurationMs:  s.duration(),
-			TestResults: tests,
+			Outcome:         types.OutcomeSuccess,
+			DurationMs:      s.duration(),
+			TestResults:     artifacts.TestResults,
+			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
 	}
 }
 
-func (s *JobSessionLogger) FinishFail(results []dt.TestResult, outcome types.Outcome, err error, workerID string) {
+func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outcome, err error, workerID string) {
 	s.phase = types.PhaseCompleted
 	s.outcome = outcome
 	errStr := ""
@@ -130,11 +137,12 @@ func (s *JobSessionLogger) FinishFail(results []dt.TestResult, outcome types.Out
 		UserID: s.userID,
 		Type:   types.TypeResult,
 		Result: &types.ResultEvent{
-			Outcome:        s.outcome,
-			DurationMs:     s.duration(),
-			Error:          errStr,
-			TestResults:    results,
-			FailedWorkerID: workerID,
+			Outcome:         s.outcome,
+			DurationMs:      s.duration(),
+			Error:           errStr,
+			TestResults:     artifacts.TestResults,
+			FailedWorkerID:  workerID,
+			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
 	}
 }

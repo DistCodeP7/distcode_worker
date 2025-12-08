@@ -64,12 +64,12 @@ func TestIncomingJobRequest_ToDomain(t *testing.T) {
 		t.Errorf("expected timeout 30s, got: %v", job.Timeout)
 	}
 
-	// Two nodes (test + replica)
-	if len(job.Nodes) != 2 {
-		t.Fatalf("expected 2 nodes, got %d", len(job.Nodes))
+	// 1 test container + 1 replica
+	if len(job.SubmissionNodes)+1 != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(job.SubmissionNodes)+1)
 	}
 
-	testNode := job.Nodes[0]
+	testNode := job.TestNode
 	if testNode.Alias != "testing" ||
 		testNode.BuildCommand != "go testing" ||
 		testNode.EntryCommand != "./testing" {
@@ -81,7 +81,7 @@ func TestIncomingJobRequest_ToDomain(t *testing.T) {
 	}
 
 	// Replica node check
-	replica := job.Nodes[1]
+	replica := job.SubmissionNodes[0]
 	if replica.Alias != "replica1" ||
 		replica.BuildCommand != "go build" ||
 		replica.EntryCommand != "./main" {
@@ -203,11 +203,11 @@ func TestConvertToJobRequest_MultipleReplicas(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	if len(job.Nodes) != 3 {
-		t.Fatalf("expected 3 nodes (1 test + 2 replicas), got %d", len(job.Nodes))
+	if len(job.SubmissionNodes)+1 != 3 {
+		t.Fatalf("expected 3 nodes (1 test + 2 replicas), got %d", len(job.SubmissionNodes)+1)
 	}
 
-	if job.Nodes[1].Alias != "replica1" || job.Nodes[2].Alias != "replica2" {
+	if job.SubmissionNodes[0].Alias != "replica1" || job.SubmissionNodes[1].Alias != "replica2" {
 		t.Error("replica aliases not set correctly")
 	}
 }
@@ -235,7 +235,7 @@ func TestConvertToJobRequest_EmptyFiles(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	if len(job.Nodes[0].Files) != 0 || len(job.Nodes[1].Files) != 0 {
+	if len(job.TestNode.Files) != 0 || len(job.SubmissionNodes[0].Files) != 0 {
 		t.Error("expected empty file maps")
 	}
 }
@@ -348,7 +348,7 @@ func TestConvertToJobRequest_PeersEnvInNodes(t *testing.T) {
 	expectedPeersValue := "replica1,replica2,replica3"
 
 	// Test container should have PEERS env
-	testNode := job.Nodes[0]
+	testNode := job.TestNode
 	testEnvs := make(map[string]string)
 	for _, env := range testNode.Envs {
 		testEnvs[env.Key] = env.Value
@@ -361,8 +361,8 @@ func TestConvertToJobRequest_PeersEnvInNodes(t *testing.T) {
 	}
 
 	// Each replica should have PEERS env
-	for i := 1; i < len(job.Nodes); i++ {
-		replicaNode := job.Nodes[i]
+	for i := 1; i < len(job.SubmissionNodes); i++ {
+		replicaNode := job.SubmissionNodes[i]
 		replicaEnvs := make(map[string]string)
 		for _, env := range replicaNode.Envs {
 			replicaEnvs[env.Key] = env.Value
@@ -399,7 +399,7 @@ func TestConvertToJobRequest_PeersEnvSingleReplica(t *testing.T) {
 
 	// Check test container
 	testEnvs := make(map[string]string)
-	for _, env := range job.Nodes[0].Envs {
+	for _, env := range job.TestNode.Envs {
 		testEnvs[env.Key] = env.Value
 	}
 	if testEnvs["PEERS"] != expectedPeersValue {
@@ -408,7 +408,7 @@ func TestConvertToJobRequest_PeersEnvSingleReplica(t *testing.T) {
 
 	// Check replica
 	replicaEnvs := make(map[string]string)
-	for _, env := range job.Nodes[1].Envs {
+	for _, env := range job.SubmissionNodes[0].Envs {
 		replicaEnvs[env.Key] = env.Value
 	}
 	if replicaEnvs["PEERS"] != expectedPeersValue {
@@ -453,7 +453,7 @@ func TestConvertToJobRequest_PeersEnvOverridesBehavior(t *testing.T) {
 
 	// Test container: PEERS from createPeerAliasEnv should override original
 	testEnvs := make(map[string]string)
-	for _, env := range job.Nodes[0].Envs {
+	for _, env := range job.TestNode.Envs {
 		testEnvs[env.Key] = env.Value
 	}
 	if testEnvs["PEERS"] != expectedPeersValue {
@@ -462,7 +462,7 @@ func TestConvertToJobRequest_PeersEnvOverridesBehavior(t *testing.T) {
 
 	// Replica: PEERS from createPeerAliasEnv should override all others
 	replicaEnvs := make(map[string]string)
-	for _, env := range job.Nodes[1].Envs {
+	for _, env := range job.SubmissionNodes[0].Envs {
 		replicaEnvs[env.Key] = env.Value
 	}
 	if replicaEnvs["PEERS"] != expectedPeersValue {

@@ -78,9 +78,14 @@ func TestMain(m *testing.M) {
 }
 
 func TestWorkerResults(t *testing.T) {
-	tr, err := testWorker.ReadTestResults(testCtx, "app/tmp/results.json")
+	byte_tr, err := testWorker.ReadFile(testCtx, "app/tmp/results.json")
 	if err != nil {
 		t.Fatalf("ReadTestResults failed: %v", err)
+	}
+
+	var tr []disttest.TestResult
+	if err := json.Unmarshal(byte_tr, &tr); err != nil {
+		t.Fatalf("Failed to unmarshal test results: %v", err)
 	}
 
 	tr1 := tr[0]

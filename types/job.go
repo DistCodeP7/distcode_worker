@@ -40,8 +40,9 @@ type TestContainerConfig struct {
 }
 
 type Job struct {
-	JobUID  uuid.UUID
-	Nodes   []NodeSpec
-	UserID  string
-	Timeout time.Duration
+	JobUID          uuid.UUID
+	TestNode        NodeSpec
+	SubmissionNodes []NodeSpec
+	UserID          string
+	Timeout         time.Duration
 }
