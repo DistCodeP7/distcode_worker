@@ -10,10 +10,14 @@ import (
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
+	"github.com/joho/godotenv"
 	l "github.com/sirupsen/logrus"
 )
 
 func main() {
+	// Load .env file
+	_ = godotenv.Load()
+
 	log.Init(l.TraceLevel, true)
 	// Parse command line flags
 	workerImageName, controllerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
