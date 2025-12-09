@@ -61,9 +61,14 @@ func (w *DockerWorker) Stop(ctx context.Context) error {
 	return nil
 }
 
+type NewWorkerCli interface {
+	dockercli.WorkerRuntime
+	dockercli.ContainerProvisioner
+}
+
 // NewWorker creates and starts a new Docker container and returns the Worker instance.
 // Errors are returned for the caller to log if needed.
-func NewWorker(ctx context.Context, cli dockercli.Client, workerImageName string, spec t.NodeSpec) (*DockerWorker, error) {
+func NewWorker(ctx context.Context, cli NewWorkerCli, workerImageName string, spec t.NodeSpec) (*DockerWorker, error) {
 	envVars := make([]string, 0, len(spec.Envs))
 	for _, env := range spec.Envs {
 		envVars = append(envVars, fmt.Sprintf("%s=%s", env.Key, env.Value))

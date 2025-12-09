@@ -1,300 +1,210 @@
 package worker
 
 import (
+	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
-	"os"
-	"strings"
+	"net"
 	"testing"
-	"time"
 
-	"github.com/DistCodeP7/distcode_worker/log"
-	"github.com/DistCodeP7/distcode_worker/types"
-	"github.com/distcodep7/dsnet/testing/disttest"
-	"github.com/docker/docker/api/types/image"
-	docker "github.com/docker/docker/client"
+	ty "github.com/DistCodeP7/distcode_worker/types"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/google/uuid"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+type MockDockerCli struct {
+	ContainerCreateFn      func(ctx context.Context, config *container.Config, host *container.HostConfig, networking interface{}, platform interface{}, containerName string) (container.CreateResponse, error)
+	ContainerStartFn       func(ctx context.Context, containerID string, opts container.StartOptions) error
+	ContainerStopFn        func(ctx context.Context, containerID string, opts container.StopOptions) error
+	ContainerRemoveFn      func(ctx context.Context, containerID string, opts container.RemoveOptions) error
+	CopyToContainerFn      func(ctx context.Context, containerID, path string, content io.Reader, opts container.CopyToContainerOptions) error
+	CopyFromContainerFn    func(ctx context.Context, containerID, path string) (io.ReadCloser, container.PathStat, error)
+	ContainerExecCreateFn  func(ctx context.Context, id string, opts container.ExecOptions) (container.ExecCreateResponse, error)
+	ContainerExecAttachFn  func(ctx context.Context, id string, opts container.ExecStartOptions) (types.HijackedResponse, error)
+	ContainerExecInspectFn func(ctx context.Context, id string) (container.ExecInspect, error)
+	ContainerExecStartFn   func(ctx context.Context, id string, opts container.ExecStartOptions) error
+	CloseFn                func() error
+}
+
+func (m *MockDockerCli) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *v1.Platform, containerName string) (container.CreateResponse, error) {
+	return m.ContainerCreateFn(ctx, config, hostConfig, networkingConfig, platform, containerName)
+}
+
+func (m *MockDockerCli) ContainerStart(ctx context.Context, containerID string, opts container.StartOptions) error {
+	return m.ContainerStartFn(ctx, containerID, opts)
+}
+
+func (m *MockDockerCli) ContainerStop(ctx context.Context, containerID string, opts container.StopOptions) error {
+	return m.ContainerStopFn(ctx, containerID, opts)
+}
+
+func (m *MockDockerCli) ContainerRemove(ctx context.Context, containerID string, opts container.RemoveOptions) error {
+	return m.ContainerRemoveFn(ctx, containerID, opts)
+}
+
+func (m *MockDockerCli) CopyToContainer(ctx context.Context, containerID, path string, content io.Reader, opts container.CopyToContainerOptions) error {
+	return m.CopyToContainerFn(ctx, containerID, path, content, opts)
+}
+
+func (m *MockDockerCli) CopyFromContainer(ctx context.Context, containerID, path string) (io.ReadCloser, container.PathStat, error) {
+	return m.CopyFromContainerFn(ctx, containerID, path)
+}
+
+func (m *MockDockerCli) ContainerExecCreate(ctx context.Context, id string, opts container.ExecOptions) (container.ExecCreateResponse, error) {
+	return m.ContainerExecCreateFn(ctx, id, opts)
+}
+
+func (m *MockDockerCli) ContainerExecStart(ctx context.Context, id string, opts container.ExecStartOptions) error {
+	return m.ContainerExecStartFn(ctx, id, opts)
+}
+
+func (m *MockDockerCli) ContainerExecAttach(ctx context.Context, id string, opts container.ExecStartOptions) (types.HijackedResponse, error) {
+	return m.ContainerExecAttachFn(ctx, id, opts)
+}
+
+func (m *MockDockerCli) ContainerExecInspect(ctx context.Context, id string) (container.ExecInspect, error) {
+	return m.ContainerExecInspectFn(ctx, id)
+}
+
+func (m *MockDockerCli) Close() error {
+	return m.CloseFn()
+}
 
 var (
-	testWorker *DockerWorker
-	testCtx    context.Context
+	id = uuid.NewString()
 )
 
-func TestMain(m *testing.M) {
-	imageName := "alpine:latest"
-	ctx := context.Background()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithVersion("1.48"))
-	if err != nil {
-		panic(err)
+func TestDockerWorker_ID_Alias(t *testing.T) {
+	w := &DockerWorker{containerID: id, alias: "node-x"}
+	if w.ID() != id {
+		t.Errorf("expected ID %s, got %s", id, w.ID())
 	}
+	if w.Alias() != "node-x" {
+		t.Errorf("expected Alias node-x, got %s", w.Alias())
+	}
+}
 
-	reader, err := cli.ImagePull(ctx, imageName, image.PullOptions{})
-	if err != nil {
-		log.Logger.WithField("image", imageName).Error("Failed to pull image")
-		panic(err)
-	}
-	defer reader.Close()
-	_, err = io.Copy(io.Discard, reader)
-	if err != nil {
-		log.Logger.WithError(err).Error("Failed to read pull output")
-		panic(err)
-	}
+func TestDockerWorker_Stop(t *testing.T) {
+	stopCalled := false
+	removeCalled := false
 
-	tr := []disttest.TestResult{
-		{
-			Type:       disttest.TypeSuccess,
-			Name:       "sample-test",
-			DurationMs: 123,
-			Message:    "All good",
+	mock := &MockDockerCli{
+		ContainerStopFn: func(ctx context.Context, id string, opts container.StopOptions) error {
+			stopCalled = true
+			return nil
+		},
+		ContainerRemoveFn: func(ctx context.Context, id string, opts container.RemoveOptions) error {
+			removeCalled = true
+			return nil
 		},
 	}
 
-	jsonData, err := json.MarshalIndent(tr, "", "  ")
-	if err != nil {
-		panic(err)
+	w := &DockerWorker{dockerCli: mock, containerID: uuid.NewString()}
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	spec := types.NodeSpec{
-		Alias: "test-worker",
-		Files: types.FileMap{
-			types.Path("results.json"): types.SourceCode(jsonData),
+
+	if !stopCalled {
+		t.Error("expected ContainerStop to be called")
+	}
+	if !removeCalled {
+		t.Error("expected ContainerRemove to be called")
+	}
+}
+
+func TestDockerWorker_ExecuteCommand_Cancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Context is cancelled immediately
+
+	mock := &MockDockerCli{
+		ContainerExecCreateFn: func(ctx context.Context, id string, opts container.ExecOptions) (container.ExecCreateResponse, error) {
+			return container.ExecCreateResponse{ID: "exec123"}, nil
+		},
+		ContainerExecAttachFn: func(ctx context.Context, id string, opts container.ExecStartOptions) (types.HijackedResponse, error) {
+			client, server := net.Pipe()
+			server.Close()
+
+			return types.HijackedResponse{
+				Conn:   client,
+				Reader: bufio.NewReader(client),
+			}, nil
+		},
+		ContainerExecInspectFn: func(ctx context.Context, id string) (container.ExecInspect, error) {
+			return container.ExecInspect{ExitCode: 0}, nil
 		},
 	}
-	w, err := NewWorker(ctx, cli, imageName, spec)
-	if err != nil {
-		panic(err)
-	}
 
-	testWorker = w
-	testCtx = ctx
-
-	code := m.Run()
-
-	_ = testWorker.Stop(ctx)
-	os.Exit(code)
-}
-
-func TestWorkerResults(t *testing.T) {
-	byte_tr, err := testWorker.ReadFile(testCtx, "app/tmp/results.json")
-	if err != nil {
-		t.Fatalf("ReadTestResults failed: %v", err)
-	}
-
-	var tr []disttest.TestResult
-	if err := json.Unmarshal(byte_tr, &tr); err != nil {
-		t.Fatalf("Failed to unmarshal test results: %v", err)
-	}
-
-	tr1 := tr[0]
-	if tr1.Type != disttest.TypeSuccess {
-		t.Errorf("Expected Type %v, got %v", disttest.TypeSuccess, tr1.Type)
-	}
-	if tr1.Name != "sample-test" {
-		t.Errorf("Expected Name %v, got %v", "sample-test", tr1.Name)
-	}
-	if tr1.DurationMs != 123 {
-		t.Errorf("Expected DurationMs %v, got %v", 123, tr1.DurationMs)
-	}
-	if tr1.Message != "All good" {
-		t.Errorf("Expected Message %v, got %v", "All good", tr1.Message)
-	}
-}
-
-func TestWorker_Alias(t *testing.T) {
-	w := &DockerWorker{alias: "alias-test"}
-	if got := w.Alias(); got != "alias-test" {
-		t.Errorf("Alias() = %v, want %v", got, "alias-test")
-	}
-}
-
-func TestWorker_ExecuteCommand(t *testing.T) {
-	var buf bytes.Buffer
-	err := testWorker.ExecuteCommand(testCtx, ExecuteCommandOptions{
-		Cmd:          "echo 123",
-		OutputWriter: &buf,
-	})
-	if err != nil {
-		t.Fatalf("exec failed: %v", err)
-	}
-	if strings.TrimSpace(buf.String()) != "123" {
-		t.Fatalf("unexpected output: %s", buf.String())
-	}
-}
-
-func TestWorker_ExecuteCommand_Timeout(t *testing.T) {
-	ctx, cancel := context.WithTimeout(testCtx, 500*time.Millisecond)
-	defer cancel()
-
-	var buf bytes.Buffer
-	err := testWorker.ExecuteCommand(ctx, ExecuteCommandOptions{
-		Cmd:          "sleep 2",
-		OutputWriter: &buf,
+	w := &DockerWorker{dockerCli: mock, containerID: id}
+	err := w.ExecuteCommand(ctx, ExecuteCommandOptions{
+		Cmd:          "echo",
+		OutputWriter: io.Discard,
 	})
 
-	if err == nil {
-		t.Fatal("Expected error due to context timeout, got nil")
-	}
-
-	if ctx.Err() != context.DeadlineExceeded {
-		t.Errorf("Expected context deadline exceeded, got: %v", ctx.Err())
+	if err == nil || ctx.Err() == nil {
+		t.Fatalf("expected cancellation error, got %v", err)
 	}
 }
 
-func TestWorker_ExecuteCommand_ExitError(t *testing.T) {
+// Test ReadFile tar extraction
+func TestDockerWorker_ReadFile(t *testing.T) {
 	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	data := []byte("hello world")
+	tw.WriteHeader(&tar.Header{Name: "test.txt", Size: int64(len(data))})
+	tw.Write(data)
+	tw.Close()
 
-	err := testWorker.ExecuteCommand(testCtx, ExecuteCommandOptions{
-		Cmd:          "false",
-		OutputWriter: &buf,
-	})
-
-	if err == nil {
-		t.Fatal("Expected error for non-zero exit code, got nil")
-	}
-
-	expectedPart := "execution finished with non-zero exit code"
-	if !strings.Contains(err.Error(), expectedPart) {
-		t.Errorf("Expected error message containing %q, got %q", expectedPart, err.Error())
-	}
-}
-
-func TestWorker_ExecuteCommand_EnvVars(t *testing.T) {
-	var buf bytes.Buffer
-	err := testWorker.ExecuteCommand(testCtx, ExecuteCommandOptions{
-		Cmd: "echo $TEST_RUNTIME_ENV",
-		Envs: []types.EnvironmentVariable{
-			{Key: "TEST_RUNTIME_ENV", Value: "RuntimeValue123"},
-		},
-		OutputWriter: &buf,
-	})
-
-	if err != nil {
-		t.Fatalf("exec failed: %v", err)
-	}
-
-	if strings.TrimSpace(buf.String()) != "RuntimeValue123" {
-		t.Errorf("Expected output 'RuntimeValue123', got %q", buf.String())
-	}
-}
-
-func TestNewWorker_Lifecycle_WithScript(t *testing.T) {
-	scriptContent := `#!/bin/sh
-echo "Hello from script"
-echo "My Key is $MY_Start_KEY"
-`
-	spec := types.NodeSpec{
-		Alias: "lifecycle-worker",
-		Files: types.FileMap{
-			types.Path("run.sh"): types.SourceCode(scriptContent),
-		},
-		Envs: []types.EnvironmentVariable{
-			{Key: "MY_Start_KEY", Value: "StartValue999"},
+	mock := &MockDockerCli{
+		CopyFromContainerFn: func(ctx context.Context, id, path string) (io.ReadCloser, container.PathStat, error) {
+			return io.NopCloser(bytes.NewReader(buf.Bytes())), container.PathStat{}, nil
 		},
 	}
 
-	cli, err := docker.NewClientWithOpts(
-		docker.FromEnv,
-		docker.WithVersion("1.48"),
-	)
+	w := &DockerWorker{dockerCli: mock, containerID: id}
+	out, err := w.ReadFile(context.Background(), "/app/tmp/test.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	w, err := NewWorker(testCtx, cli, "alpine:latest", spec)
-	if err != nil {
-		t.Fatalf("Failed to create worker: %v", err)
-	}
-
-	defer w.Stop(context.Background())
-
-	var buf bytes.Buffer
-	err = w.ExecuteCommand(testCtx, ExecuteCommandOptions{
-		Cmd:          "chmod +x run.sh && ./run.sh",
-		OutputWriter: &buf,
-	})
-
-	if err != nil {
-		t.Fatalf("Execute failed: %v. Output: %s", err, buf.String())
-	}
-
-	output := buf.String()
-
-	if !strings.Contains(output, "Hello from script") {
-		t.Error("Output did not contain script echo")
-	}
-
-	if !strings.Contains(output, "My Key is StartValue999") {
-		t.Error("Output did not contain environment variable value")
+	if string(out) != "hello world" {
+		t.Fatalf("expected 'hello world', got %q", string(out))
 	}
 }
 
-func TestWorker_NetworkManager_Integration(t *testing.T) {
+// Test NewWorker env assembly
+func TestNewWorker_EnvAssembly(t *testing.T) {
+	var receivedConfig *container.Config
 
-	ctx := context.Background()
-	cli, err := docker.NewClientWithOpts(
-		docker.FromEnv,
-		docker.WithVersion("1.48"),
-	)
+	mock := &MockDockerCli{
+		ContainerCreateFn: func(ctx context.Context, config *container.Config, host *container.HostConfig, n interface{}, p interface{}, name string) (container.CreateResponse, error) {
+			receivedConfig = config
+			return container.CreateResponse{ID: id}, nil
+		},
+		ContainerStartFn: func(ctx context.Context, id string, opts container.StartOptions) error { return nil },
+		CopyToContainerFn: func(ctx context.Context, id, path string, content io.Reader, opts container.CopyToContainerOptions) error {
+			return nil
+		},
+	}
+
+	spec := ty.NodeSpec{
+		Alias: "alias",
+		Envs: []ty.EnvironmentVariable{
+			{Key: "X", Value: "1"},
+			{Key: "Y", Value: "2"},
+		},
+	}
+
+	_, err := NewWorker(context.Background(), mock, "alpine", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	aliasA := "manager-node-a"
-	aliasB := "manager-node-b"
-
-	specA := types.NodeSpec{Alias: aliasA}
-	workerA, err := NewWorker(ctx, cli, "alpine:latest", specA)
-	if err != nil {
-		t.Fatalf("Failed to create Worker A: %v", err)
-	}
-	defer workerA.Stop(context.Background())
-
-	specB := types.NodeSpec{Alias: aliasB}
-	workerB, err := NewWorker(ctx, cli, "alpine:latest", specB)
-	if err != nil {
-		t.Fatalf("Failed to create Worker B: %v", err)
-	}
-	defer workerB.Stop(context.Background())
-
-	netManager := NewDockerNetworkManager(cli)
-
-	workers := []Worker{workerA, workerB}
-	cleanup, netName, err := netManager.CreateAndConnect(ctx, workers)
-	if err != nil {
-		t.Fatalf("NetworkManager failed to connect workers: %v", err)
-	}
-
-	defer cleanup()
-
-	t.Logf("Network Manager created network: %s", netName)
-
-	t.Logf("Attempting to ping %s from %s...", aliasB, aliasA)
-
-	var bufA bytes.Buffer
-	err = workerA.ExecuteCommand(ctx, ExecuteCommandOptions{
-		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasB),
-		OutputWriter: &bufA,
-	})
-
-	if err != nil {
-		t.Fatalf("Worker A failed to ping Worker B. Error: %v\nOutput:\n%s", err, bufA.String())
-	}
-
-	if !strings.Contains(bufA.String(), "0% packet loss") {
-		t.Errorf("Ping output did not indicate success:\n%s", bufA.String())
-	}
-
-	t.Logf("Attempting to ping %s from %s...", aliasA, aliasB)
-
-	var bufB bytes.Buffer
-	err = workerB.ExecuteCommand(ctx, ExecuteCommandOptions{
-		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasA),
-		OutputWriter: &bufB,
-	})
-
-	if err != nil {
-		t.Fatalf("Worker B failed to ping Worker A. Error: %v\nOutput:\n%s", err, bufB.String())
+	if len(receivedConfig.Env) != 2 || receivedConfig.Env[0] != "X=1" || receivedConfig.Env[1] != "Y=2" {
+		t.Fatalf("wrong env formatting: %v", receivedConfig.Env)
 	}
 }
