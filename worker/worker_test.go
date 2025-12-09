@@ -15,12 +15,11 @@ import (
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 )
 
 var (
-	testWorker *Worker
+	testWorker *DockerWorker
 	testCtx    context.Context
 )
 
@@ -104,7 +103,7 @@ func TestWorkerResults(t *testing.T) {
 }
 
 func TestWorker_Alias(t *testing.T) {
-	w := &Worker{alias: "alias-test"}
+	w := &DockerWorker{alias: "alias-test"}
 	if got := w.Alias(); got != "alias-test" {
 		t.Errorf("Alias() = %v, want %v", got, "alias-test")
 	}
@@ -231,53 +230,6 @@ echo "My Key is $MY_Start_KEY"
 	}
 }
 
-func TestWorker_Network_Operations(t *testing.T) {
-	cli, err := docker.NewClientWithOpts(
-		docker.FromEnv,
-		docker.WithVersion("1.48"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	netName := "test-worker-net-" + strings.ToLower(testWorker.Alias())
-	netResp, err := cli.NetworkCreate(testCtx, netName, network.CreateOptions{})
-	if err != nil {
-		t.Fatalf("Failed to create temp network: %v", err)
-	}
-
-	defer func() {
-		_ = cli.NetworkRemove(context.Background(), netResp.ID)
-	}()
-
-	netAlias := "worker-net-alias"
-	err = testWorker.ConnectToNetwork(testCtx, netName, netAlias)
-	if err != nil {
-		t.Fatalf("Failed to connect to network: %v", err)
-	}
-
-	containerJSON, err := cli.ContainerInspect(testCtx, testWorker.ID())
-	if err != nil {
-		t.Fatalf("Failed to inspect container: %v", err)
-	}
-
-	if _, ok := containerJSON.NetworkSettings.Networks[netName]; !ok {
-		t.Errorf("Container is not attached to network %s", netName)
-	}
-
-	err = testWorker.DisconnectFromNetwork(testCtx, netName)
-	if err != nil {
-		t.Fatalf("Failed to disconnect from network: %v", err)
-	}
-
-	containerJSON, err = cli.ContainerInspect(testCtx, testWorker.ID())
-	if err != nil {
-		t.Fatalf("Failed to inspect container: %v", err)
-	}
-	if _, ok := containerJSON.NetworkSettings.Networks[netName]; ok {
-		t.Errorf("Container is still attached to network %s after disconnect", netName)
-	}
-}
 func TestWorker_NetworkManager_Integration(t *testing.T) {
 
 	ctx := context.Background()
@@ -308,7 +260,7 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 
 	netManager := NewDockerNetworkManager(cli)
 
-	workers := []WorkerInterface{workerA, workerB}
+	workers := []Worker{workerA, workerB}
 	cleanup, netName, err := netManager.CreateAndConnect(ctx, workers)
 	if err != nil {
 		t.Fatalf("NetworkManager failed to connect workers: %v", err)

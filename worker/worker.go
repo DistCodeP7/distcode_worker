@@ -14,50 +14,38 @@ import (
 	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/sirupsen/logrus"
 )
 
-type Worker struct {
+type DockerWorker struct {
 	alias       string
 	containerID string
 	dockerCli   dockercli.WorkerRuntime
 }
 
-type WorkerInterface interface {
+type Worker interface {
 	ID() string
 	Alias() string
-	ConnectToNetwork(ctx context.Context, networkName, alias string) error
-	DisconnectFromNetwork(ctx context.Context, networkName string) error
 	Stop(ctx context.Context) error
 	ExecuteCommand(ctx context.Context, options ExecuteCommandOptions) error
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 }
 
-var _ WorkerInterface = (*Worker)(nil)
+var _ Worker = (*DockerWorker)(nil)
 
-func (w *Worker) ID() string {
+// ID returns the internal container ID of the worker.
+func (w *DockerWorker) ID() string {
 	return w.containerID
 }
 
 // Alias returns the alias of the worker.
-func (w *Worker) Alias() string {
+func (w *DockerWorker) Alias() string {
 	return w.alias
 }
 
-func (w *Worker) ConnectToNetwork(ctx context.Context, networkName, alias string) error {
-	return w.dockerCli.NetworkConnect(ctx, networkName, w.containerID, &network.EndpointSettings{
-		Aliases: []string{alias},
-	})
-}
-
-func (w *Worker) DisconnectFromNetwork(ctx context.Context, networkName string) error {
-	return w.dockerCli.NetworkDisconnect(ctx, networkName, w.containerID, true)
-}
-
 // Stop stops and removes the container. Logs only container stop/removal events.
-func (w *Worker) Stop(ctx context.Context) error {
+func (w *DockerWorker) Stop(ctx context.Context) error {
 	log.Logger.Tracef("Stopping container %s", w.containerID[:12])
 
 	timeout := 3
@@ -75,7 +63,7 @@ func (w *Worker) Stop(ctx context.Context) error {
 
 // NewWorker creates and starts a new Docker container and returns the Worker instance.
 // Errors are returned for the caller to log if needed.
-func NewWorker(ctx context.Context, cli dockercli.Client, workerImageName string, spec t.NodeSpec) (*Worker, error) {
+func NewWorker(ctx context.Context, cli dockercli.Client, workerImageName string, spec t.NodeSpec) (*DockerWorker, error) {
 	envVars := make([]string, 0, len(spec.Envs))
 	for _, env := range spec.Envs {
 		envVars = append(envVars, fmt.Sprintf("%s=%s", env.Key, env.Value))
@@ -116,7 +104,7 @@ func NewWorker(ctx context.Context, cli dockercli.Client, workerImageName string
 		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 
-	w := &Worker{
+	w := &DockerWorker{
 		containerID: resp.ID,
 		dockerCli:   cli,
 		alias:       spec.Alias,
@@ -159,7 +147,7 @@ type ExecuteCommandOptions struct {
 
 // ExecuteCommand executes a command and streams stdout/stderr.
 // Only logs cancellation; errors are returned for the caller to handle/log.
-func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) error {
+func (w *DockerWorker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) error {
 	execEnvStrings := make([]string, 0, len(e.Envs))
 	for _, env := range e.Envs {
 		execEnvStrings = append(execEnvStrings, fmt.Sprintf("%s=%s", env.Key, env.Value))
@@ -214,7 +202,7 @@ func (w *Worker) ExecuteCommand(ctx context.Context, e ExecuteCommandOptions) er
 	return nil
 }
 
-func (w *Worker) ReadFile(ctx context.Context, path string) ([]byte, error) {
+func (w *DockerWorker) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	reader, _, err := w.dockerCli.CopyFromContainer(ctx, w.containerID, path)
 	if err != nil {
 		return nil, err
@@ -222,7 +210,7 @@ func (w *Worker) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	defer reader.Close()
 
 	tr := tar.NewReader(reader)
-	_, err = tr.Next() // move to first file in tar
+	_, err = tr.Next()
 	if err != nil {
 		return nil, err
 	}

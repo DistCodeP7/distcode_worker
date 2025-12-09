@@ -24,7 +24,7 @@ type WorkerManagerInterface interface {
 
 // NetworkManagerInterface creates and connects workers to a network
 type NetworkManagerInterface interface {
-	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkName string, err error)
+	CreateAndConnect(ctx context.Context, workers []Worker) (cleanup func(), networkName string, err error)
 }
 
 // JobDispatcher orchestrates job execution across workers
@@ -109,12 +109,12 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	defer d.workerManager.ReleaseJob(job.JobUID)
 	session.SetPhase(types.PhasePending, "Configuring network...")
 
-	submissionWorkers := make([]WorkerInterface, len(submissionUnits))
+	submissionWorkers := make([]Worker, len(submissionUnits))
 	for i, unit := range submissionUnits {
 		submissionWorkers[i] = unit.Worker
 	}
 
-	cleanupNet, _, err := d.networkManager.CreateAndConnect(ctx, append([]WorkerInterface{testUnit.Worker}, submissionWorkers...))
+	cleanupNet, _, err := d.networkManager.CreateAndConnect(ctx, append([]Worker{testUnit.Worker}, submissionWorkers...))
 	if err != nil {
 		d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("network setup failed: %w", err))
 		return

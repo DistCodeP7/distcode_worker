@@ -38,7 +38,7 @@ type JobRun struct {
 
 type WorkUnit struct {
 	Spec   types.NodeSpec
-	Worker WorkerInterface
+	Worker Worker
 }
 
 func NewJobRun(

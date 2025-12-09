@@ -10,7 +10,7 @@ import (
 )
 
 type WorkerProducer interface {
-	NewWorkers(ctx context.Context, spec []t.NodeSpec) ([]WorkerInterface, error)
+	NewWorkers(ctx context.Context, spec []t.NodeSpec) ([]Worker, error)
 }
 
 type DockerWorkerProducer struct {
@@ -29,8 +29,8 @@ func NewDockerWorkerProducer(dockerCli dockercli.Client, workerImageName string)
 
 // NewWorkers creates new Docker-based workers based on the provided specifications.
 // The index order of specs is preserved in the returned slice of WorkerInterface.
-func (dwp *DockerWorkerProducer) NewWorkers(ctx context.Context, specs []t.NodeSpec) ([]WorkerInterface, error) {
-	workers := make([]WorkerInterface, len(specs))
+func (dwp *DockerWorkerProducer) NewWorkers(ctx context.Context, specs []t.NodeSpec) ([]Worker, error) {
+	workers := make([]Worker, len(specs))
 
 	var wg sync.WaitGroup
 	var errMu sync.Mutex
