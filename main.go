@@ -10,8 +10,15 @@ import (
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
+	"github.com/joho/godotenv"
 	l "github.com/sirupsen/logrus"
 )
+
+func init() {
+	if err := godotenv.Load(); err != nil {
+		log.Logger.Warn(".env file not found, relying on system environment variables")
+	}
+}
 
 func main() {
 	log.Init(l.TraceLevel, true)

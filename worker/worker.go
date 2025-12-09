@@ -127,7 +127,7 @@ func NewWorker(ctx context.Context, cli dockercli.Client, workerImageName string
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
-	tarStream, err := createTarStream(spec.Files)
+	tarStream, err := utils.CreateTarStream(spec.Files)
 	if err != nil {
 		_ = w.Stop(ctx)
 		return nil, fmt.Errorf("failed to create tar stream: %w", err)

@@ -3,6 +3,7 @@ package jobsession
 import (
 	"bufio"
 	"io"
+	"log"
 	"sync"
 	"time"
 
@@ -50,18 +51,27 @@ func (s *JobSessionLogger) SetPhase(p types.Phase, msg string) {
 	}
 }
 
-var (
+const (
 	MaxLogBuffer = 10000
+	MaxLogBytes  = 1 * 1024 * 1024
 )
 
-// Used to create a new log writer for streaming logs from a worker
 func (s *JobSessionLogger) NewLogWriter(workerID string) io.Writer {
 	pr, pw := io.Pipe()
+	var totalBytes int64 = 0
 
 	go func() {
 		scanner := bufio.NewScanner(pr)
 		for scanner.Scan() {
 			text := scanner.Text()
+			msgSize := len(text) + 1
+
+			s.mu.Lock()
+			if totalBytes+int64(msgSize) > MaxLogBytes {
+				s.mu.Unlock()
+				log.Printf("worker %s: total log buffer exceeded, dropping message", workerID)
+				continue
+			}
 
 			logEvent := types.LogEvent{
 				WorkerID: workerID,
@@ -69,17 +79,17 @@ func (s *JobSessionLogger) NewLogWriter(workerID string) io.Writer {
 				Message:  text + "\n",
 			}
 
+			if len(s.logBuffer) < MaxLogBuffer {
+				s.logBuffer = append(s.logBuffer, logEvent)
+				totalBytes += int64(msgSize)
+			}
+			s.mu.Unlock()
+
 			s.out <- types.StreamingJobEvent{
 				UserID: s.userID,
 				Type:   types.TypeLog,
 				Log:    &logEvent,
 			}
-
-			s.mu.Lock()
-			if len(s.logBuffer) < MaxLogBuffer {
-				s.logBuffer = append(s.logBuffer, logEvent)
-			}
-			s.mu.Unlock()
 		}
 	}()
 
