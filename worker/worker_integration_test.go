@@ -202,7 +202,7 @@ echo "My Key is $MY_Start_KEY"
 		t.Fatal(err)
 	}
 
-	w, err := NewWorker(testCtx, cli, "alpine:latest", spec)
+	w, err := NewWorker(testCtx, cli, "ghcr.io/distcodep7/dsnet:latest", spec)
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
@@ -245,14 +245,14 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	aliasB := "manager-node-b"
 
 	specA := types.NodeSpec{Alias: aliasA}
-	workerA, err := NewWorker(ctx, cli, "alpine:latest", specA)
+	workerA, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specA)
 	if err != nil {
 		t.Fatalf("Failed to create Worker A: %v", err)
 	}
 	defer workerA.Stop(context.Background())
 
 	specB := types.NodeSpec{Alias: aliasB}
-	workerB, err := NewWorker(ctx, cli, "alpine:latest", specB)
+	workerB, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specB)
 	if err != nil {
 		t.Fatalf("Failed to create Worker B: %v", err)
 	}
