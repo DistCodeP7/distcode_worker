@@ -246,7 +246,7 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 
 	job := types.Job{
 		JobUID:  uuid.New(),
-		Timeout: 15,
+		Timeout: 60,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
 			BuildCommand: "go build -o app main.go",
@@ -264,7 +264,7 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 	select {
 	case <-done:
 		// Success
-	case <-time.After(20 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Test timed out waiting for compilation failure")
 	}
 

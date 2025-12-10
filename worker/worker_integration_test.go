@@ -24,7 +24,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	imageName := "alpine:latest"
+	imageName := "ghcr.io/distcodep7/dsnet:latest"
 	ctx := context.Background()
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithVersion("1.48"))
 	if err != nil {
