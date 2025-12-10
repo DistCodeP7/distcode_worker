@@ -2,13 +2,14 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
-	t "github.com/distcodep7/dsnet/testing"
+	tt "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
@@ -26,7 +27,7 @@ func (m *MockJobStore) SaveResult(
 	outcome types.Outcome,
 	testResults []dt.TestResult,
 	logs []types.LogEvent,
-	nodeMessageLogs []t.TraceEvent,
+	nodeMessageLogs []tt.TraceEvent,
 	startTime time.Time,
 ) error {
 	args := m.Called(ctx, jobID, outcome, testResults, logs, nodeMessageLogs, startTime)
@@ -387,4 +388,76 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 // Helper utility for string check
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && len(substr) > 0 && s[0:len(substr)] == substr // simplistic, real impl needs strings.Contains
+}
+
+func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
+	_, jobStore, jobsCh, cleanup := setupTestHelper(t)
+	defer cleanup()
+
+	done := make(chan struct{})
+
+	// Expect Timeout Outcome
+	jobStore.On("SaveResult",
+		mock.Anything, mock.Anything,
+		types.OutcomeSuccess,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+	).Run(func(args mock.Arguments) {
+		close(done)
+	}).Return(nil)
+
+	goModContent := []byte("module worker-test\ngo 1.20\n")
+	// Infinite loop code
+	fileContent := []byte(`
+		package main
+		import "fmt"
+		func main() {
+			fmt.Println("INTEGRATION TEST SUCCESS")
+		}
+	`)
+
+	trace_log := tt.TraceEvent{
+		Timestamp: 1,
+		ID:        uuid.NewString(),
+		MsgType:   "something",
+		MessageID: "Foo",
+		EvtType:   "recv",
+		From:      "A",
+		To:        "B",
+		VectorClock: map[string]uint64{
+			"A": 1, "B": 1,
+		},
+		Payload: nil,
+	}
+
+	b, err := json.Marshal(trace_log)
+	require.NoError(t, err)
+
+	job := types.Job{
+		JobUID: uuid.New(),
+		// Set a very short timeout for the JOB
+		Timeout: 3,
+		TestNode: types.NodeSpec{
+			Alias:        "main_node",
+			BuildCommand: "go build -o app main.go",
+			EntryCommand: "./app",
+			Files: types.FileMap{
+				"go.mod":          types.SourceCode(goModContent),
+				"main.go":         types.SourceCode(fileContent),
+				"trace_log.jsonl": types.SourceCode(append(b, '\n')),
+			},
+		},
+		SubmissionNodes: []types.NodeSpec{},
+	}
+
+	jobsCh <- job
+
+	// We wait slightly longer than the job timeout (3s) to give the dispatcher time to kill it
+	select {
+	case <-done:
+		// Success
+	case <-time.After(10 * time.Second):
+		t.Fatal("Test timed out - Dispatcher failed to kill the infinite loop job")
+	}
+
+	jobStore.AssertExpectations(t)
 }
