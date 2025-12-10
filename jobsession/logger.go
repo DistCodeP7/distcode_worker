@@ -2,8 +2,8 @@ package jobsession
 
 import (
 	"bufio"
+	"errors"
 	"io"
-	"log"
 	"sync"
 	"time"
 
@@ -56,21 +56,24 @@ const (
 	MaxLogBytes  = 1 * 1024 * 1024
 )
 
+var ErrLogLimitExceeded = errors.New("log limit exceeded")
+
 func (s *JobSessionLogger) NewLogWriter(workerID string) io.Writer {
 	pr, pw := io.Pipe()
 	var totalBytes int64 = 0
 
 	go func() {
+		defer pr.Close()
+
 		scanner := bufio.NewScanner(pr)
 		for scanner.Scan() {
 			text := scanner.Text()
 			msgSize := len(text) + 1
-
 			s.mu.Lock()
-			if totalBytes+int64(msgSize) > MaxLogBytes {
+			if totalBytes+int64(msgSize) > MaxLogBytes || len(s.logBuffer) >= MaxLogBuffer {
 				s.mu.Unlock()
-				log.Printf("worker %s: total log buffer exceeded, dropping message", workerID)
-				continue
+				pr.CloseWithError(ErrLogLimitExceeded)
+				return
 			}
 
 			logEvent := types.LogEvent{
@@ -79,10 +82,9 @@ func (s *JobSessionLogger) NewLogWriter(workerID string) io.Writer {
 				Message:  text + "\n",
 			}
 
-			if len(s.logBuffer) < MaxLogBuffer {
-				s.logBuffer = append(s.logBuffer, logEvent)
-				totalBytes += int64(msgSize)
-			}
+			s.logBuffer = append(s.logBuffer, logEvent)
+			totalBytes += int64(msgSize)
+
 			s.mu.Unlock()
 
 			s.out <- types.StreamingJobEvent{

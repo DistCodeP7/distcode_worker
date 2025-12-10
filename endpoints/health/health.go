@@ -24,6 +24,7 @@ func (hr *HealthServiceRegister) Register(s ...HealthService) {
 	hr.services = append(hr.services, s...)
 }
 
+// CheckAll returns a map with the health status and message of all registered services.
 func (hr *HealthServiceRegister) CheckAll() map[string]map[string]any {
 	hr.mu.RLock()
 	defer hr.mu.RUnlock()
@@ -39,6 +40,7 @@ func (hr *HealthServiceRegister) CheckAll() map[string]map[string]any {
 	return results
 }
 
+// OverallStatus returns true if all registered services are healthy.
 func (hr *HealthServiceRegister) OverallStatus() bool {
 	hr.mu.RLock()
 	defer hr.mu.RUnlock()
