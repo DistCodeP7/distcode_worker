@@ -11,7 +11,7 @@ import (
 
 type WorkerManager struct {
 	maxWorkers     int
-	jobs           map[string][]WorkerInterface
+	jobs           map[string][]Worker
 	mu             sync.RWMutex
 	workerProducer WorkerProducer
 }
@@ -19,7 +19,7 @@ type WorkerManager struct {
 func NewWorkerManager(maxWorkers int, workerFactory WorkerProducer) (*WorkerManager, error) {
 	manager := &WorkerManager{
 		maxWorkers:     maxWorkers,
-		jobs:           make(map[string][]WorkerInterface),
+		jobs:           make(map[string][]Worker),
 		workerProducer: workerFactory,
 	}
 
@@ -71,7 +71,7 @@ func (wm *WorkerManager) ReserveWorkers(
 	return testUnit, submissionUnits, nil
 }
 
-func (wm *WorkerManager) removeWorkers(workers []WorkerInterface) error {
+func (wm *WorkerManager) removeWorkers(workers []Worker) error {
 	// Create waitgroup to stop workers concurrently
 	var wg sync.WaitGroup
 	errors := make(chan error, len(workers))
@@ -98,7 +98,7 @@ func (wm *WorkerManager) Shutdown() error {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
-	var allWorkers []WorkerInterface
+	var allWorkers []Worker
 	for key, workers := range wm.jobs {
 		allWorkers = append(allWorkers, workers...)
 		delete(wm.jobs, key)

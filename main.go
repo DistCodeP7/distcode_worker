@@ -14,6 +14,12 @@ import (
 	l "github.com/sirupsen/logrus"
 )
 
+func init() {
+	if err := godotenv.Load(); err != nil {
+		log.Logger.Warn(".env file not found, relying on system environment variables")
+	}
+}
+
 func main() {
 	// Load .env file
 	_ = godotenv.Load()

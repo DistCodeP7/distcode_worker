@@ -39,11 +39,6 @@ type CommandExecutor interface {
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
 }
 
-type ContainerNetworkConnector interface {
-	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
-	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
-}
-
 type FileReader interface {
 	CopyFromContainer(ctx context.Context, containerID, srcPath string) (io.ReadCloser, container.PathStat, error)
 }
@@ -51,6 +46,8 @@ type FileReader interface {
 type NetworkConnector interface {
 	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
 	NetworkRemove(ctx context.Context, networkID string) error
+	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
+	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
 }
 
 // --- Aggregate Interfaces ---
@@ -59,7 +56,6 @@ type NetworkConnector interface {
 type WorkerRuntime interface {
 	ContainerController
 	CommandExecutor
-	ContainerNetworkConnector
 	FileReader
 }
 

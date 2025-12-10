@@ -12,7 +12,7 @@ import (
 )
 
 type NetworkManager interface {
-	CreateAndConnect(ctx context.Context, workers []WorkerInterface) (cleanup func(), networkName string, err error)
+	CreateAndConnect(ctx context.Context, workers []Worker) (cleanup func(), networkName string, err error)
 }
 
 type DockerNetworkManager struct {
@@ -26,7 +26,7 @@ func NewDockerNetworkManager(cli dockercli.NetworkConnector) *DockerNetworkManag
 // Ensure it satisfies the interface.
 var _ NetworkManager = (*DockerNetworkManager)(nil)
 
-func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers []WorkerInterface) (func(), string, error) {
+func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers []Worker) (func(), string, error) {
 	networkName := "job-" + uuid.NewString()
 	_, err := dnm.dockerCli.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
 	if err != nil {
@@ -35,7 +35,12 @@ func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers [
 	log.Logger.Tracef("Created network %s", networkName)
 
 	for _, worker := range workers {
-		if err := worker.ConnectToNetwork(ctx, networkName, worker.Alias()); err != nil {
+
+		err := dnm.dockerCli.NetworkConnect(ctx, networkName, worker.ID(), &network.EndpointSettings{
+			Aliases: []string{worker.Alias()},
+		})
+
+		if err != nil {
 			log.Logger.Warnf("Failed to connect worker %s to network %s: %v", worker.ID(), networkName, err)
 			_ = dnm.dockerCli.NetworkRemove(ctx, networkName)
 			return nil, "", err
@@ -48,9 +53,7 @@ func (dnm *DockerNetworkManager) CreateAndConnect(ctx context.Context, workers [
 		defer cancel()
 
 		for _, worker := range workers {
-			if err := worker.DisconnectFromNetwork(cleanupCtx, networkName); err != nil {
-				log.Logger.Warnf("Error during worker network disconnect: %v", err)
-			}
+			dnm.dockerCli.NetworkDisconnect(cleanupCtx, networkName, worker.ID(), true)
 		}
 
 		if err := dnm.dockerCli.NetworkRemove(cleanupCtx, networkName); err != nil {
