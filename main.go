@@ -21,9 +21,6 @@ func init() {
 }
 
 func main() {
-	// Load .env file
-	_ = godotenv.Load()
-
 	log.Init(l.TraceLevel, true)
 	// Parse command line flags
 	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
