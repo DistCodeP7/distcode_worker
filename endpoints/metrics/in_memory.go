@@ -20,8 +20,6 @@ type InMemoryMetricsCollector struct {
 	StartTime     time.Time
 }
 
-// IncJobOutcome implements JobMetricsCollector.
-
 func NewInMemoryMetricsCollector() *InMemoryMetricsCollector {
 	return &InMemoryMetricsCollector{
 		StartTime: time.Now(),

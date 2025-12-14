@@ -334,20 +334,16 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 	defer wm.Shutdown()
 	defer cli.Close()
 
-	// --- TEST LOGIC START ---
-
 	done := make(chan struct{})
 
-	// 1. Expect OutcomeCancel
 	jobStore.On("SaveResult",
 		mock.Anything, mock.Anything,
-		types.OutcomeCanceled, // <--- CRITICAL: We expect the Cancel outcome
+		types.OutcomeCanceled,
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
 
-	// 2. Job that sleeps (simulates long running task)
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 	sleepCode := []byte(`
 		package main
@@ -357,7 +353,7 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 		)
 		func main() {
 			fmt.Println("Job starting, going to sleep...")
-			// Sleep longer than the test duration to ensure we don't finish naturally
+			
 			time.Sleep(10 * time.Second) 
 			fmt.Println("Job finished naturally (This should not happen)")
 		}
@@ -366,7 +362,7 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 	jobID := uuid.New()
 	job := types.Job{
 		JobUID:  jobID,
-		Timeout: 20, // Long timeout so it doesn't time out automatically
+		Timeout: 20,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
 			BuildCommand: "go build -o app main.go",
@@ -379,26 +375,18 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 		SubmissionNodes: []types.NodeSpec{},
 	}
 
-	// 3. Submit Job
 	jobsCh <- job
 
-	// 4. Wait for job to actually start
-	// If we cancel too fast (milliseconds), the dispatcher might not have
-	// registered the job in its activeJobs map yet.
-	// In a robust test, we would read from resultsCh to see a "Started" event.
-	// For simplicity, we sleep briefly.
 	time.Sleep(2 * time.Second)
 
-	// 5. Trigger Cancellation
 	fmt.Println(">>> Triggering Cancellation...")
 	cancelCh <- types.CancelJobRequest{
 		JobUID: jobID,
 	}
 
-	// 6. Wait for Result
 	select {
 	case <-done:
-		// Success: SaveResult was called with OutcomeCancel
+
 	case <-time.After(5 * time.Second):
 		t.Fatal("Test timed out waiting for job cancellation to process")
 	}
