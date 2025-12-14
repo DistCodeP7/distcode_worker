@@ -109,7 +109,7 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 
 		// User explicitly cancelled
 		if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
-			return jobsession.JobArtifacts{}, types.OutcomeCancel,
+			return jobsession.JobArtifacts{}, types.OutcomeCanceled,
 				errors.New("job canceled by user")
 		}
 
@@ -137,7 +137,7 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 	// Still necessary to check for user cancellation here as a user can
 	// cancel even after compilation succeeds.
 	if userCancelled {
-		return artifacts, types.OutcomeCancel, errors.New("job canceled by user")
+		return artifacts, types.OutcomeCanceled, errors.New("job canceled by user")
 	}
 
 	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {

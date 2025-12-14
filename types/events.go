@@ -30,7 +30,7 @@ const (
 	OutcomeFailed           Outcome = "FAILED"
 	OutcomeCompilationError Outcome = "COMPILATION_ERROR"
 	OutcomeTimeout          Outcome = "TIMEOUT"
-	OutcomeCancel           Outcome = "CANCELED"
+	OutcomeCanceled         Outcome = "CANCELED"
 )
 
 type StreamingJobEvent struct {

@@ -11,11 +11,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 	docker "github.com/docker/docker/client"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -231,7 +236,6 @@ echo "My Key is $MY_Start_KEY"
 }
 
 func TestWorker_NetworkManager_Integration(t *testing.T) {
-
 	ctx := context.Background()
 	cli, err := docker.NewClientWithOpts(
 		docker.FromEnv,
@@ -269,7 +273,6 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	defer cleanup()
 
 	t.Logf("Network Manager created network: %s", netName)
-
 	t.Logf("Attempting to ping %s from %s...", aliasB, aliasA)
 
 	var bufA bytes.Buffer
@@ -297,4 +300,96 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Worker B failed to ping Worker A. Error: %v\nOutput:\n%s", err, bufB.String())
 	}
+}
+
+func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+
+	workerImage := "ghcr.io/distcodep7/dsnet:latest"
+	jobStore := new(MockJobStore)
+	metrics := metrics.NewInMemoryMetricsCollector()
+	netManager := NewDockerNetworkManager(cli)
+	wp := NewDockerWorkerProducer(cli, workerImage)
+	wm, err := NewWorkerManager(2, wp)
+	require.NoError(t, err)
+
+	jobsCh := make(chan types.Job, 1)
+	resultsCh := make(chan types.StreamingJobEvent, 100)
+	cancelCh := make(chan types.CancelJobRequest, 1)
+
+	dispatcher := NewJobDispatcher(
+		cancelCh,
+		jobsCh,
+		resultsCh,
+		wm,
+		netManager,
+		jobStore,
+		metrics,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go dispatcher.Run(ctx)
+	defer wm.Shutdown()
+	defer cli.Close()
+
+	done := make(chan struct{})
+
+	jobStore.On("SaveResult",
+		mock.Anything, mock.Anything,
+		types.OutcomeCanceled,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+	).Run(func(args mock.Arguments) {
+		close(done)
+	}).Return(nil)
+
+	goModContent := []byte("module worker-test\ngo 1.20\n")
+	sleepCode := []byte(`
+		package main
+		import (
+			"fmt"
+			"time"
+		)
+		func main() {
+			fmt.Println("Job starting, going to sleep...")
+			
+			time.Sleep(10 * time.Second) 
+			fmt.Println("Job finished naturally (This should not happen)")
+		}
+	`)
+
+	jobID := uuid.New()
+	job := types.Job{
+		JobUID:  jobID,
+		Timeout: 20,
+		TestNode: types.NodeSpec{
+			Alias:        "main_node",
+			BuildCommand: "go build -o app main.go",
+			EntryCommand: "./app",
+			Files: types.FileMap{
+				"go.mod":  types.SourceCode(goModContent),
+				"main.go": types.SourceCode(sleepCode),
+			},
+		},
+		SubmissionNodes: []types.NodeSpec{},
+	}
+
+	jobsCh <- job
+
+	time.Sleep(2 * time.Second)
+
+	fmt.Println(">>> Triggering Cancellation...")
+	cancelCh <- types.CancelJobRequest{
+		JobUID: jobID,
+	}
+
+	select {
+	case <-done:
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for job cancellation to process")
+	}
+
+	jobStore.AssertExpectations(t)
 }
