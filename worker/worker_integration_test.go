@@ -341,7 +341,7 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 	// 1. Expect OutcomeCancel
 	jobStore.On("SaveResult",
 		mock.Anything, mock.Anything,
-		types.OutcomeCancel, // <--- CRITICAL: We expect the Cancel outcome
+		types.OutcomeCanceled, // <--- CRITICAL: We expect the Cancel outcome
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)

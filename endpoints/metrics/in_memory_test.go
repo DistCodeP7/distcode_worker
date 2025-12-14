@@ -28,10 +28,10 @@ func TestIncrementCounters(t *testing.T) {
 
 	m.IncCurrentJobs()
 	m.IncJobTotal()
-	m.IncJobSuccess()
-	m.IncJobFailure()
-	m.IncJobCanceled()
-	m.IncJobTimeout()
+	m.incJobSuccess()
+	m.incJobFailure()
+	m.incJobCanceled()
+	m.incJobTimeout()
 
 	if m.CurrentJobs != 1 ||
 		m.JobTotal != 1 ||
@@ -64,7 +64,7 @@ func TestJSON_Output(t *testing.T) {
 
 	m.IncCurrentJobs()
 	m.IncJobTotal()
-	m.IncJobSuccess()
+	m.incJobSuccess()
 	m.ObserveJobDuration(3.0)
 
 	out := m.JSON()

@@ -1,11 +1,10 @@
 package metrics
 
+import "github.com/DistCodeP7/distcode_worker/types"
+
 type JobMetricsCollector interface {
 	IncJobTotal()
-	IncJobSuccess()
-	IncJobFailure()
-	IncJobCanceled()
-	IncJobTimeout()
+	IncJobOutcome(outcome types.Outcome)
 	IncCurrentJobs()
 	DecCurrentJobs()
 	ObserveJobDuration(seconds float64)

@@ -19,7 +19,6 @@ import (
 type WorkerManagerInterface interface {
 	ReserveWorkers(jobID uuid.UUID, testSpec types.NodeSpec, submissionSpecs []types.NodeSpec) (WorkUnit, []WorkUnit, error)
 	ReleaseJob(jobID uuid.UUID) error
-	Shutdown() error
 }
 
 // NetworkManagerInterface creates and connects workers to a network
@@ -143,7 +142,7 @@ func (d *JobDispatcher) finalizeJob(
 		session.FinishFail(artifacts, outcome, err, "")
 	}
 
-	d.updateMetrics(outcome)
+	d.metricsCollector.IncJobOutcome(outcome)
 	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -175,19 +174,6 @@ func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) (Work
 		case <-d.clock.After(200 * time.Millisecond):
 			// Retry loop
 		}
-	}
-}
-
-func (d *JobDispatcher) updateMetrics(outcome types.Outcome) {
-	switch outcome {
-	case types.OutcomeSuccess:
-		d.metricsCollector.IncJobSuccess()
-	case types.OutcomeCancel:
-		d.metricsCollector.IncJobCanceled()
-	case types.OutcomeTimeout:
-		d.metricsCollector.IncJobTimeout()
-	default:
-		d.metricsCollector.IncJobFailure()
 	}
 }
 

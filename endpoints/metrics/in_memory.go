@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/DistCodeP7/distcode_worker/types"
 )
 
 type InMemoryMetricsCollector struct {
@@ -17,6 +19,8 @@ type InMemoryMetricsCollector struct {
 	TotalDuration time.Duration
 	StartTime     time.Time
 }
+
+// IncJobOutcome implements JobMetricsCollector.
 
 func NewInMemoryMetricsCollector() *InMemoryMetricsCollector {
 	return &InMemoryMetricsCollector{
@@ -38,13 +42,29 @@ func (m *InMemoryMetricsCollector) dec(field *int64) {
 	*field--
 }
 
+func (m *InMemoryMetricsCollector) IncJobOutcome(outcome types.Outcome) {
+	switch outcome {
+	case types.OutcomeSuccess:
+		m.incJobSuccess()
+	case types.OutcomeFailed, types.OutcomeCompilationError:
+		m.incJobFailure()
+	case types.OutcomeCanceled:
+		m.incJobCanceled()
+	case types.OutcomeTimeout:
+		m.incJobTimeout()
+	}
+
+}
+
+func (m *InMemoryMetricsCollector) incJobSuccess()  { m.inc(&m.JobSuccess) }
+func (m *InMemoryMetricsCollector) incJobFailure()  { m.inc(&m.JobFailure) }
+func (m *InMemoryMetricsCollector) incJobCanceled() { m.inc(&m.JobCanceled) }
+func (m *InMemoryMetricsCollector) incJobTimeout()  { m.inc(&m.JobTimeout) }
+func (m *InMemoryMetricsCollector) IncJobSuccess()  { m.inc(&m.JobSuccess) }
+
 func (m *InMemoryMetricsCollector) DecCurrentJobs() { m.dec(&m.CurrentJobs) }
 func (m *InMemoryMetricsCollector) IncCurrentJobs() { m.inc(&m.CurrentJobs) }
 func (m *InMemoryMetricsCollector) IncJobTotal()    { m.inc(&m.JobTotal) }
-func (m *InMemoryMetricsCollector) IncJobSuccess()  { m.inc(&m.JobSuccess) }
-func (m *InMemoryMetricsCollector) IncJobFailure()  { m.inc(&m.JobFailure) }
-func (m *InMemoryMetricsCollector) IncJobCanceled() { m.inc(&m.JobCanceled) }
-func (m *InMemoryMetricsCollector) IncJobTimeout()  { m.inc(&m.JobTimeout) }
 func (m *InMemoryMetricsCollector) ObserveJobDuration(seconds float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
