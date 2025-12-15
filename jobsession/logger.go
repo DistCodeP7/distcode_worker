@@ -3,6 +3,7 @@ package jobsession
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -15,37 +16,49 @@ import (
 
 // Struct that manages job session logging and event emission
 type JobSessionLogger struct {
-	jobID     uuid.UUID
-	userID    string
-	out       chan<- types.StreamingJobEvent
-	startTime time.Time
-	phase     types.Phase
-	outcome   types.Outcome
-	mu        sync.Mutex
-	logBuffer []types.LogEvent
+	jobID          uuid.UUID
+	userID         string
+	out            chan<- types.StreamingJobEvent
+	startTime      time.Time
+	phase          types.Phase
+	outcome        types.Outcome
+	mu             sync.Mutex
+	logBuffer      []types.LogEvent
+	stageDurations map[string]time.Duration
+	stageStart     time.Time
 }
 
 // Constructor for JobSessionLogger
 func NewJobSession(job types.Job, out chan<- types.StreamingJobEvent) *JobSessionLogger {
 	return &JobSessionLogger{
-		jobID:     job.JobUID,
-		userID:    job.UserID,
-		out:       out,
-		startTime: time.Now(),
-		phase:     types.PhasePending,
-		outcome:   types.OutcomeSuccess, // Assumes success until failure
-		logBuffer: make([]types.LogEvent, 0, 100),
+		jobID:          job.JobUID,
+		userID:         job.UserID,
+		out:            out,
+		startTime:      time.Now(),
+		phase:          types.PhasePending,
+		outcome:        types.OutcomeSuccess, // Assumes success until failure
+		logBuffer:      make([]types.LogEvent, 0, 100),
+		stageDurations: make(map[string]time.Duration, 0),
+		stageStart:     time.Now(),
 	}
 }
 
 // Used to update the current phase and send a status event
 func (s *JobSessionLogger) SetPhase(p types.Phase, msg string) {
+	now := time.Now()
+
+	s.mu.Lock()
+	// accumulate time for previous phase
+	s.stageDurations[string(s.phase)] += now.Sub(s.stageStart)
+	s.stageStart = now
 	s.phase = p
+	s.mu.Unlock()
+
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
 		Type:   types.TypeStatus,
 		Status: &types.StatusEvent{
-			Phase:   string(s.phase),
+			Phase:   string(p),
 			Message: msg,
 		},
 	}
@@ -125,6 +138,9 @@ type JobArtifacts struct {
 
 func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
 	s.phase = types.PhaseCompleted
+
+	s.finalizeStageTiming()
+
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
 		Type:   types.TypeResult,
@@ -145,6 +161,8 @@ func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outc
 		errStr = err.Error()
 	}
 
+	s.finalizeStageTiming()
+
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
 		Type:   types.TypeResult,
@@ -156,5 +174,17 @@ func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outc
 			FailedWorkerID:  workerID,
 			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
+	}
+}
+
+func (s *JobSessionLogger) finalizeStageTiming() {
+	now := time.Now()
+	s.stageDurations[string(s.phase)] += now.Sub(s.stageStart)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for k, v := range s.stageDurations {
+		fmt.Println(k, v.Milliseconds())
 	}
 }
