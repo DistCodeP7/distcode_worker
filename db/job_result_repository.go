@@ -71,7 +71,7 @@ func (jr *JobRepository) SaveResult(
 	}
 	defer tx.Rollback(ctx)
 
-	uid, err := jr.upsertJobResult(ctx, tx, job.ProblemID, job.UserID, job.JobUID)
+	uid, err := jr.insertOrUpdateJobResult(ctx, tx, job.ProblemID, job.UserID, job.JobUID)
 	if err != nil {
 		return fmt.Errorf("failed to upsert job_results: %w", err)
 	}
@@ -137,7 +137,9 @@ func (jr *JobRepository) SaveResult(
 	return nil
 }
 
-func (jr *JobRepository) upsertJobResult(ctx context.Context, tx pgx.Tx, problemID int, userID string, jobUID uuid.UUID) (uuid.UUID, error) {
+// insertOrUpdateJobResult inserts a new job result into the job_results table if no existing result is found
+// for the given problemID and userID. If a result already exists, it returns the existing job UID.
+func (jr *JobRepository) insertOrUpdateJobResult(ctx context.Context, tx pgx.Tx, problemID int, userID string, jobUID uuid.UUID) (uuid.UUID, error) {
 	var existingUID uuid.UUID
 	err := tx.QueryRow(ctx,
 		`SELECT job_uid FROM job_results WHERE problem_id=$1 AND user_id=$2`,
