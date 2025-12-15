@@ -48,6 +48,7 @@ type NetworkConnector interface {
 	NetworkRemove(ctx context.Context, networkID string) error
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
+	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
 }
 
 // --- Aggregate Interfaces ---
@@ -91,6 +92,10 @@ func NewClient(cli *client.Client) *DockerClient {
 }
 
 // --- ContainerAPI Implementation ---
+
+func (d *DockerClient) NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error) {
+	return d.cli.NetworkInspect(ctx, networkID, options)
+}
 
 func (d *DockerClient) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *v1.Platform, containerName string) (container.CreateResponse, error) {
 	return d.cli.ContainerCreate(ctx, config, hostConfig, networkingConfig, platform, containerName)

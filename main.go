@@ -28,8 +28,9 @@ func main() {
 	// Parse command line flags
 	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
 	log.Logger.WithFields(l.Fields{
-		"worker_image": workerImageName,
-		"num_workers":  numWorkers,
+		"worker_image":  workerImageName,
+		"num_workers":   numWorkers,
+		"jobs_capacity": jobsCapacity,
 	}).Info("Application initialized")
 
 	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
@@ -77,6 +78,7 @@ func main() {
 		worker.NewDockerNetworkManager(appResources.DockerCli),
 		db.NewJobRepository(appResources.DB),
 		m,
+		jobsCapacity,
 	)
 
 	dispatcherDone := make(chan struct{})

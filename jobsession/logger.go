@@ -48,7 +48,6 @@ func (s *JobSessionLogger) SetPhase(p types.Phase, msg string) {
 	now := time.Now()
 
 	s.mu.Lock()
-	// accumulate time for previous phase
 	s.stageDurations[string(s.phase)] += now.Sub(s.stageStart)
 	s.stageStart = now
 	s.phase = p

@@ -40,6 +40,8 @@ type JobDispatcher struct {
 	mu           sync.Mutex
 	activeJobs   map[string]*JobRun
 	activeJobsWg sync.WaitGroup
+
+	capacity chan struct{}
 }
 
 func NewJobDispatcher(
@@ -50,6 +52,7 @@ func NewJobDispatcher(
 	networkManager NetworkManagerInterface,
 	jobStore db.JobStore,
 	metricsCollector metrics.JobMetricsCollector,
+	maxConcurrentJobs int,
 	opts ...func(*JobDispatcher),
 ) *JobDispatcher {
 	d := &JobDispatcher{
@@ -62,6 +65,12 @@ func NewJobDispatcher(
 		metricsCollector: metricsCollector,
 		clock:            clockwork.NewRealClock(),
 		activeJobs:       make(map[string]*JobRun),
+		capacity:         make(chan struct{}, maxConcurrentJobs),
+	}
+
+	// fill semaphore with maxConcurrentJobs slots
+	for i := 0; i < maxConcurrentJobs; i++ {
+		d.capacity <- struct{}{}
 	}
 
 	for _, opt := range opts {
@@ -79,14 +88,25 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 			d.activeJobsWg.Wait()
 			log.Logger.Info("All jobs finished. Dispatcher exiting.")
 			return
-		case job := <-d.jobChannel:
-			d.activeJobsWg.Go(func() {
-				d.metricsCollector.IncCurrentJobs()
-				d.processJob(ctx, job)
-				d.metricsCollector.DecCurrentJobs()
-			})
+
 		case cancelReq := <-d.cancelJobChan:
 			go d.cancelJob(cancelReq)
+
+		case <-d.capacity:
+			select {
+			case job := <-d.jobChannel:
+				d.activeJobsWg.Go(func() {
+					defer func() { d.capacity <- struct{}{} }()
+
+					d.metricsCollector.IncCurrentJobs()
+					d.processJob(ctx, job)
+					d.metricsCollector.DecCurrentJobs()
+				})
+
+			case <-ctx.Done():
+				d.capacity <- struct{}{}
+				return
+			}
 		}
 	}
 }
@@ -99,14 +119,14 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	session := jobsession.NewJobSession(job, d.resultsChannel)
 	session.SetPhase(types.PhasePending, "Initializing...")
 
-	session.SetPhase(types.PhasePending, "Reserving workers...")
+	session.SetPhase(types.PhaseReserving, "Reserving workers...")
 	testUnit, submissionUnits, err := d.requestWorkers(ctx, job)
 	if err != nil {
 		d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("worker reservation failed: %w", err))
 		return
 	}
 	defer d.workerManager.ReleaseJob(job.JobUID)
-	session.SetPhase(types.PhasePending, "Configuring network...")
+	session.SetPhase(types.PhaseConfiguringNetwork, "Configuring network...")
 
 	submissionWorkers := make([]Worker, len(submissionUnits))
 	for i, unit := range submissionUnits {

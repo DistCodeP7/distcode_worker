@@ -87,6 +87,7 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 		netManager,
 		jobStore,
 		metrics,
+		10,
 	)
 
 	ctx := context.Background()
@@ -180,6 +181,7 @@ func setupTestHelper(t *testing.T) (*JobDispatcher, *MockJobStore, chan types.Jo
 		netManager,
 		jobStore,
 		metrics,
+		10,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -501,6 +503,7 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 		netManager,
 		jobStore,
 		metrics,
+		10,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

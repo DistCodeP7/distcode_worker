@@ -325,6 +325,7 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 		netManager,
 		jobStore,
 		metrics,
+		10,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
