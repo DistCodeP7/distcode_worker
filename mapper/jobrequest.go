@@ -113,5 +113,6 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 		TestNode:        testNode,
 		SubmissionNodes: nodes,
 		SubmittedAt:     req.SubmittedAt,
+		ProblemID:       req.ProblemID,
 	}, nil
 }

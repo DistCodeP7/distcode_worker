@@ -9,6 +9,7 @@ import (
 
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
+	t "github.com/distcodep7/dsnet/testing"
 	tt "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/client"
@@ -23,15 +24,14 @@ type MockJobStore struct {
 
 func (m *MockJobStore) SaveResult(
 	ctx context.Context,
-	jobID uuid.UUID,
 	outcome types.Outcome,
 	testResults []dt.TestResult,
 	logs []types.LogEvent,
-	nodeMessageLogs []tt.TraceEvent,
+	nodeMessageLogs []t.TraceEvent,
 	startTime time.Time,
-	queued_at time.Time,
+	job types.Job,
 ) error {
-	args := m.Called(ctx, jobID, outcome, testResults, logs, nodeMessageLogs, startTime)
+	args := m.Called(ctx, outcome, testResults, logs, nodeMessageLogs, startTime, job)
 	return args.Error(0)
 }
 

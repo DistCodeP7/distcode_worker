@@ -148,13 +148,12 @@ func (d *JobDispatcher) finalizeJob(
 
 	saveErr := d.jobStore.SaveResult(
 		saveCtx,
-		job.JobUID,
 		outcome,
 		artifacts.TestResults,
 		session.GetBufferedLogs(),
 		artifacts.NodeMessageLogs,
 		session.StartTime(),
-		job.SubmittedAt,
+		job,
 	)
 
 	if saveErr != nil {
