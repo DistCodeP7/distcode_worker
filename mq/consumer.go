@@ -19,6 +19,7 @@ func StartJobConsumer(ctx context.Context, jobs chan<- types.Job) error {
 	go func() {
 		for req := range jobRequests {
 			job, err := mapper.ConvertToJobRequest(&req)
+			fmt.Print(job.SubmittedAt)
 			if err != nil {
 				log.Logger.WithError(err).Error("Failed to convert JobRequest to Job")
 				continue

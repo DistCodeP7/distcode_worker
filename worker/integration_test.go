@@ -29,6 +29,7 @@ func (m *MockJobStore) SaveResult(
 	logs []types.LogEvent,
 	nodeMessageLogs []tt.TraceEvent,
 	startTime time.Time,
+	queued_at time.Time,
 ) error {
 	args := m.Called(ctx, jobID, outcome, testResults, logs, nodeMessageLogs, startTime)
 	return args.Error(0)
