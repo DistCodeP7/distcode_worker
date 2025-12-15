@@ -17,12 +17,14 @@ import (
 
 // Update Interface signature to accept nodeMessageLogs
 type JobStore interface {
-	SaveResult(ctx context.Context, jobID uuid.UUID, outcome types.Outcome, testResults []dt.TestResult, logs []types.LogEvent, nodeMessageLogs []t.TraceEvent, startTime time.Time) error
+	SaveResult(ctx context.Context, jobID uuid.UUID, outcome types.Outcome, testResults []dt.TestResult, logs []types.LogEvent, nodeMessageLogs []t.TraceEvent, startTime, queued_at time.Time) error
 }
 
 type JobRepository struct {
 	pool Repository
 }
+
+var _ JobStore = (*JobRepository)(nil)
 
 func NewJobRepository(pool Repository) *JobRepository {
 	return &JobRepository{pool: pool}
@@ -36,6 +38,7 @@ func (jr *JobRepository) SaveResult(
 	logs []types.LogEvent,
 	nodeMessageLogs []t.TraceEvent,
 	startTime time.Time,
+	queued_at time.Time,
 ) error {
 	if testResults == nil {
 		testResults = []dt.TestResult{}
@@ -69,14 +72,16 @@ func (jr *JobRepository) SaveResult(
 			test_results = $2,  
 			duration = $3,
 			logs = $4,
-			finished_at = NOW() 
-		WHERE job_uid = $5`
+			finished_at = NOW(),
+			queued_at = $5
+		WHERE job_uid = $6`
 
 	_, err = tx.Exec(ctx, updateQuery,
 		string(outcomeJSON),
 		string(resultsJSON),
 		duration,
 		string(logsJSON),
+		queued_at,
 		jobID,
 	)
 

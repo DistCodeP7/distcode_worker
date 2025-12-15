@@ -7,10 +7,11 @@ import (
 )
 
 type JobRequest struct {
-	JobUID  string           `json:"jobUid"`
-	Nodes   ContainerConfigs `json:"nodes"`
-	UserId  string           `json:"userId"`
-	Timeout int              `json:"timeout"`
+	JobUID      string           `json:"jobUid"`
+	Nodes       ContainerConfigs `json:"nodes"`
+	UserId      string           `json:"userId"`
+	Timeout     int              `json:"timeout"`
+	SubmittedAt time.Time        `json:"submittedAt"`
 }
 
 type ContainerConfigs struct {
@@ -45,4 +46,5 @@ type Job struct {
 	SubmissionNodes []NodeSpec
 	UserID          string
 	Timeout         time.Duration
+	SubmittedAt     time.Time
 }

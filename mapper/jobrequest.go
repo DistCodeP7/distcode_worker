@@ -112,5 +112,6 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 		Timeout:         time.Duration(req.Timeout) * time.Second,
 		TestNode:        testNode,
 		SubmissionNodes: nodes,
+		SubmittedAt:     req.SubmittedAt,
 	}, nil
 }

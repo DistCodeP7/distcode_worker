@@ -154,6 +154,7 @@ func (d *JobDispatcher) finalizeJob(
 		session.GetBufferedLogs(),
 		artifacts.NodeMessageLogs,
 		session.StartTime(),
+		job.SubmittedAt,
 	)
 
 	if saveErr != nil {
