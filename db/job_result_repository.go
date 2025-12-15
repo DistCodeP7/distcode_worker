@@ -11,7 +11,6 @@ import (
 
 	t "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
-	"github.com/google/uuid"
 )
 
 type JobStore interface {
@@ -71,20 +70,20 @@ func (jr *JobRepository) SaveResult(
 	}
 	defer tx.Rollback(ctx)
 
-	uid, err := jr.insertOrUpdateJobResult(ctx, tx, job.ProblemID, job.UserID, job.JobUID)
-	if err != nil {
-		return fmt.Errorf("failed to upsert job_results: %w", err)
-	}
-
 	updateQuery := `
-		UPDATE job_results
-		SET outcome = $1,
-			test_results = $2,
-			duration = $3,
-			logs = $4,
-			finished_at = NOW(),
-			queued_at = $5
-		WHERE job_uid = $6
+		INSERT INTO job_results
+		(
+			outcome,
+			test_results,
+			duration,
+			logs,
+			finished_at,
+			queued_at,
+			job_uid,
+			user_id,
+			problem_id
+		)
+		VALUES($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
 	`
 
 	_, err = tx.Exec(ctx, updateQuery,
@@ -93,7 +92,9 @@ func (jr *JobRepository) SaveResult(
 		duration,
 		string(logsJSON),
 		job.SubmittedAt,
-		uid,
+		job.JobUID,
+		job.UserID,
+		job.ProblemID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update job_results: %w", err)
@@ -113,7 +114,7 @@ func (jr *JobRepository) SaveResult(
 			}
 
 			_, err = tx.Exec(ctx, insertQuery,
-				uid,
+				job.JobUID,
 				msg.Timestamp,
 				msg.From,
 				msg.To,
@@ -135,31 +136,4 @@ func (jr *JobRepository) SaveResult(
 	}
 
 	return nil
-}
-
-// insertOrUpdateJobResult inserts a new job result into the job_results table if no existing result is found
-// for the given problemID and userID. If a result already exists, it returns the existing job UID.
-func (jr *JobRepository) insertOrUpdateJobResult(ctx context.Context, tx pgx.Tx, problemID int, userID string, jobUID uuid.UUID) (uuid.UUID, error) {
-	var existingUID uuid.UUID
-	err := tx.QueryRow(ctx,
-		`SELECT job_uid FROM job_results WHERE problem_id=$1 AND user_id=$2`,
-		problemID, userID,
-	).Scan(&existingUID)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-
-			_, err = tx.Exec(ctx,
-				`INSERT INTO job_results (job_uid, problem_id, user_id) VALUES ($1,$2,$3)`,
-				jobUID, problemID, userID,
-			)
-			if err != nil {
-				return uuid.Nil, fmt.Errorf("failed to insert job_result: %w", err)
-			}
-			return jobUID, nil
-		}
-		return uuid.Nil, fmt.Errorf("failed to check existing job_result: %w", err)
-	}
-
-	return existingUID, nil
 }
