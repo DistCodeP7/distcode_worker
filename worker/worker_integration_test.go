@@ -16,7 +16,6 @@ import (
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
 	docker "github.com/docker/docker/client"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
@@ -303,7 +302,7 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 }
 
 func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	require.NoError(t, err)
 
 	workerImage := "ghcr.io/distcodep7/dsnet:latest"
@@ -336,10 +335,15 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 
 	done := make(chan struct{})
 
-	jobStore.On("SaveResult",
-		mock.Anything, mock.Anything,
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
 		types.OutcomeCanceled,
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -373,6 +377,9 @@ func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "Something",
+		SubmittedAt:     time.Now(),
+		ProblemID:       -1,
 	}
 
 	jobsCh <- job

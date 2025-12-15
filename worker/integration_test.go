@@ -9,7 +9,6 @@ import (
 
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
-	t "github.com/distcodep7/dsnet/testing"
 	tt "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/client"
@@ -27,7 +26,7 @@ func (m *MockJobStore) SaveResult(
 	outcome types.Outcome,
 	testResults []dt.TestResult,
 	logs []types.LogEvent,
-	nodeMessageLogs []t.TraceEvent,
+	nodeMessageLogs []tt.TraceEvent,
 	startTime time.Time,
 	job types.Job,
 ) error {
@@ -56,10 +55,10 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 		mock.Anything,
 		mock.Anything,
 	).Run(func(args mock.Arguments) {
-		outcome := args.Get(2).(types.Outcome)
+		outcome := args.Get(1).(types.Outcome)
 
 		if outcome != types.OutcomeSuccess {
-			logs := args.Get(4).([]types.LogEvent)
+			logs := args.Get(3).([]types.LogEvent)
 			fmt.Printf("\n\n====== JOB FAILED (Outcome: %s) ======\n", outcome)
 			for _, l := range logs {
 
@@ -127,6 +126,9 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 				},
 			},
 		},
+		UserID:      "Something",
+		SubmittedAt: time.Now(),
+		ProblemID:   -1,
 	}
 
 	jobsCh <- job
@@ -142,13 +144,14 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 
 	jobStore.AssertCalled(t, "SaveResult",
 		mock.Anything,
-		jobID,
 		types.OutcomeSuccess,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
+		job,
 	)
+
 }
 
 func setupTestHelper(t *testing.T) (*JobDispatcher, *MockJobStore, chan types.Job, func()) {
@@ -197,13 +200,18 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 
 	done := make(chan struct{})
 
-	jobStore.On("SaveResult",
-		mock.Anything, mock.Anything,
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
 		types.OutcomeCompilationError,
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 
-		logs := args.Get(4).([]types.LogEvent)
+		logs := args.Get(3).([]types.LogEvent)
 		foundErrorMsg := false
 		for _, l := range logs {
 
@@ -240,6 +248,9 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "Something",
+		SubmittedAt:     time.Now(),
+		ProblemID:       -1,
 	}
 
 	jobsCh <- job
@@ -260,10 +271,15 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 
 	done := make(chan struct{})
 
-	jobStore.On("SaveResult",
-		mock.Anything, mock.Anything,
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
 		types.OutcomeFailed,
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -289,6 +305,9 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "Something",
+		SubmittedAt:     time.Now(),
+		ProblemID:       -1,
 	}
 
 	jobsCh <- job
@@ -309,10 +328,15 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 
 	done := make(chan struct{})
 
-	jobStore.On("SaveResult",
-		mock.Anything, mock.Anything,
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
 		types.OutcomeTimeout,
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -343,6 +367,9 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "Something",
+		SubmittedAt:     time.Now(),
+		ProblemID:       -1,
 	}
 
 	jobsCh <- job
@@ -367,10 +394,15 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 
 	done := make(chan struct{})
 
-	jobStore.On("SaveResult",
-		mock.Anything, mock.Anything,
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
 		types.OutcomeSuccess,
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -403,8 +435,7 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 	require.NoError(t, err)
 
 	job := types.Job{
-		JobUID: uuid.New(),
-
+		JobUID:  uuid.New(),
 		Timeout: 3,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
@@ -417,6 +448,9 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "Something",
+		SubmittedAt:     time.Now(),
+		ProblemID:       -1,
 	}
 
 	jobsCh <- job
@@ -475,10 +509,15 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 
 	done := make(chan struct{})
 
-	jobStore.On("SaveResult",
-		mock.Anything, mock.Anything,
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
 		types.OutcomeFailed,
-		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)

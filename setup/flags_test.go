@@ -9,16 +9,14 @@ import (
 func TestParseFlagsDefaults(t *testing.T) {
 	workerImage, workers, capacity := ParseFlags()
 
-	expectedWorkers := 4
-
 	if workerImage != "ghcr.io/distcodep7/dsnet:latest" {
 		t.Errorf("Expected default image 'ghcr.io/distcodep7/dsnet:latest', got '%s'", workerImage)
 	}
-	if workers != expectedWorkers {
-		t.Errorf("Expected default workers 4, got %d", workers)
+	if workers != defaultNumWorkers {
+		t.Errorf("Expected default workers %d, got %d", defaultNumWorkers, workers)
 	}
-	if capacity != expectedWorkers*2 {
-		t.Errorf("Expected default capacity 2 * %d, got %d", expectedWorkers, capacity)
+	if capacity != defaultNumWorkers*2 {
+		t.Errorf("Expected default capacity 2 * %d, got %d", defaultNumWorkers, capacity)
 	}
 }
 
