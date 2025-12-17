@@ -9,6 +9,10 @@ func PtrInt64(i int) *int64 {
 	return &v
 }
 
+func PtrInt(i int) *int {
+	return &i
+}
+
 func PtrString(s string) *string {
 	return &s
 }

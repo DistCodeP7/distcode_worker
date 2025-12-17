@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/cancel"
 	"github.com/DistCodeP7/distcode_worker/db"
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/jobsession"
@@ -42,6 +43,8 @@ type JobDispatcher struct {
 	activeJobsWg sync.WaitGroup
 
 	capacity chan struct{}
+
+	cancellationTracker *cancel.CancellationTracker
 }
 
 func NewJobDispatcher(
@@ -56,20 +59,20 @@ func NewJobDispatcher(
 	opts ...func(*JobDispatcher),
 ) *JobDispatcher {
 	d := &JobDispatcher{
-		cancelJobChan:    cancelJobChan,
-		jobChannel:       jobChannel,
-		resultsChannel:   resultsChannel,
-		workerManager:    workerManager,
-		networkManager:   networkManager,
-		jobStore:         jobStore,
-		metricsCollector: metricsCollector,
-		clock:            clockwork.NewRealClock(),
-		activeJobs:       make(map[string]*JobRun),
-		capacity:         make(chan struct{}, maxConcurrentJobs),
+		cancelJobChan:       cancelJobChan,
+		jobChannel:          jobChannel,
+		resultsChannel:      resultsChannel,
+		workerManager:       workerManager,
+		networkManager:      networkManager,
+		jobStore:            jobStore,
+		metricsCollector:    metricsCollector,
+		clock:               clockwork.NewRealClock(),
+		activeJobs:          make(map[string]*JobRun),
+		capacity:            make(chan struct{}, maxConcurrentJobs),
+		cancellationTracker: cancel.NewCancellationTracker(5*time.Minute, 1*time.Minute),
 	}
 
-	// fill semaphore with maxConcurrentJobs slots
-	for i := 0; i < maxConcurrentJobs; i++ {
+	for range maxConcurrentJobs {
 		d.capacity <- struct{}{}
 	}
 
@@ -81,6 +84,7 @@ func NewJobDispatcher(
 
 // Run starts the dispatcher loop
 func (d *JobDispatcher) Run(ctx context.Context) {
+	go d.cancellationTracker.StartGC(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -90,7 +94,7 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 			return
 
 		case cancelReq := <-d.cancelJobChan:
-			go d.cancelJob(cancelReq)
+			d.handleCancelRequest(cancelReq)
 
 		case job := <-d.jobChannel:
 			<-d.capacity
@@ -105,8 +109,34 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 	}
 }
 
+// Renamed from cancelJob to handleCancelRequest to reflect dual logic
+func (d *JobDispatcher) handleCancelRequest(req types.CancelJobRequest) {
+	d.mu.Lock()
+	jobRun, isActive := d.activeJobs[req.JobUID.String()]
+	d.mu.Unlock()
+
+	if isActive {
+		log.Logger.Debugf("Cancelling active job: %s", req.JobUID.String())
+		jobRun.Cancel(true)
+	} else {
+		d.cancellationTracker.Track(req.JobUID)
+		log.Logger.Debugf("Staging cancellation for pending job: %s", req.JobUID.String())
+	}
+}
+
+func (d *JobDispatcher) failCancelledJob(job types.Job, reason string) {
+	log.Logger.Warnf("Job %s %s", job.JobUID.String(), reason)
+	session := jobsession.NewJobSession(job, d.resultsChannel)
+	d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeCanceled, fmt.Errorf("%s", reason))
+}
+
 // processJob orchestrates the lifecycle strictly and linearly
 func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
+	if d.cancellationTracker.IsCancelled(job.JobUID) {
+		d.failCancelledJob(job, "cancelled before start")
+		return
+	}
+
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
 	d.metricsCollector.IncJobTotal()
 
@@ -136,6 +166,11 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	jobRun := NewJobRun(ctx, job, testUnit, submissionUnits, session)
 	d.registerActiveJob(jobRun)
 	defer d.unregisterActiveJob(jobRun)
+
+	if d.cancellationTracker.IsCancelled(job.JobUID) {
+		log.Logger.Warnf("Job %s cancelled during setup, aborting execution", job.JobUID.String())
+		jobRun.Cancel(true)
+	}
 
 	artifacts, outcome, err := jobRun.Execute()
 	d.finalizeJob(job, session, artifacts, outcome, err)
@@ -202,17 +237,4 @@ func (d *JobDispatcher) unregisterActiveJob(run *JobRun) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.activeJobs, run.GetID().String())
-}
-
-// CancelJob delegates cancellation to the specific JobRun
-func (d *JobDispatcher) cancelJob(req types.CancelJobRequest) {
-	d.mu.Lock()
-	jobRun, ok := d.activeJobs[req.JobUID.String()]
-	d.mu.Unlock()
-
-	if !ok {
-		log.Logger.Warnf("Cancel request for unknown or completed job: %s", req.JobUID.String())
-		return
-	}
-	jobRun.Cancel(true)
 }

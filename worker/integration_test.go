@@ -139,7 +139,7 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 	jobStore.AssertExpectations(t)
 }
 
-func TestIntegration_JobDispatcher_Cancel(t *testing.T) {
+func TestIntegration_JobDispatcher_CancelLate(t *testing.T) {
 	_, jobStore, jobsCh, cancelCh, cleanup := setupTestHelper(t)
 	defer cleanup()
 
@@ -192,6 +192,67 @@ func TestIntegration_JobDispatcher_Cancel(t *testing.T) {
 	cancelCh <- types.CancelJobRequest{
 		JobUID: job.JobUID,
 	}
+
+	select {
+	case <-done:
+
+	case <-time.After(30 * time.Second):
+		t.Fatal("Test timed out waiting for cancel failure")
+	}
+
+	jobStore.AssertExpectations(t)
+}
+
+func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
+	_, jobStore, jobsCh, cancelCh, cleanup := setupTestHelper(t)
+	defer cleanup()
+
+	done := make(chan struct{})
+
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
+		types.OutcomeCanceled,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+		mock.Anything,
+	).Run(func(args mock.Arguments) {
+		close(done)
+	}).Return(nil)
+
+	goModContent := []byte("module worker-test\ngo 1.20\n")
+	badCode := []byte(`
+		package main
+		import "time"
+		func main() {
+			time.Sleep(60 * time.Second)
+		}
+	`)
+
+	job := types.Job{
+		JobUID:  uuid.New(),
+		Timeout: 60,
+		TestNode: types.NodeSpec{
+			Alias:        "main_node",
+			BuildCommand: "go build -o app main.go",
+			EntryCommand: "./app",
+			Files: types.FileMap{
+				"go.mod":  types.SourceCode(goModContent),
+				"main.go": types.SourceCode(badCode),
+			},
+		},
+		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "Something",
+		SubmittedAt:     time.Now(),
+		ProblemID:       -1,
+	}
+
+	cancelCh <- types.CancelJobRequest{
+		JobUID: job.JobUID,
+	}
+	jobsCh <- job
 
 	select {
 	case <-done:

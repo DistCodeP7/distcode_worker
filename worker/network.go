@@ -101,7 +101,6 @@ func (dnm *DockerNetworkManager) CreateAndConnect(
 			}
 
 			if len(net.Containers) == 0 {
-				log.Logger.Warnf("All endpoints detached from network %s", networkName)
 				break
 			}
 

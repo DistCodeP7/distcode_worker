@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DistCodeP7/distcode_worker/jobsession"
+	js "github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	t "github.com/distcodep7/dsnet/testing"
@@ -23,7 +23,7 @@ import (
 // Compile -> Run -> Collect pipeline.
 type JobRun struct {
 	Job             types.Job
-	SessionLogger   *jobsession.JobSessionLogger
+	SessionLogger   *js.JobSessionLogger
 	SubmissionUnits []WorkUnit
 	TestUnit        WorkUnit
 	AllUnits        []WorkUnit
@@ -43,11 +43,9 @@ func NewJobRun(
 	job types.Job,
 	tUnit WorkUnit,
 	sUnits []WorkUnit,
-	session *jobsession.JobSessionLogger,
+	session *js.JobSessionLogger,
 ) *JobRun {
 	jobCtx, cancel := context.WithTimeout(parentCtx, time.Duration(job.Timeout)*time.Second)
-
-	log.Logger.Infof("Job %s: Timeout set to %d seconds", job.JobUID.String(), job.Timeout)
 	allUnits := make([]WorkUnit, 0, 1+len(sUnits))
 	allUnits = append(allUnits, tUnit)
 	allUnits = append(allUnits, sUnits...)
@@ -86,9 +84,14 @@ func (r *JobRun) CanceledByUser() bool {
 	return r.canceledByUser
 }
 
+var (
+	ErrUserCancelled = errors.New("job canceled by user")
+	ErrJobTimeout    = errors.New("job execution timed out")
+)
+
 // Execute runs the full job pipeline.
 // It returns artifacts, the final outcome, and any error that occurred.
-func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
+func (r *JobRun) Execute() (js.JobArtifacts, types.Outcome, error) {
 	defer func() {
 		r.cancel()
 	}()
@@ -96,23 +99,17 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 	r.SessionLogger.SetPhase(types.PhaseCompiling, "Compiling code...")
 	compileSuccess, failedWorker, compileErr := r.compileAll()
 
+	userCancelled := r.CanceledByUser()
+	if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
+		return js.JobArtifacts{}, types.OutcomeCanceled, ErrUserCancelled
+	}
+
 	if !compileSuccess {
-		userCancelled := r.CanceledByUser()
-
-		// User explicitly cancelled
-		if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
-			return jobsession.JobArtifacts{}, types.OutcomeCanceled,
-				errors.New("job canceled by user")
-		}
-
-		// Context timed out during compile
 		if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
-			return jobsession.JobArtifacts{}, types.OutcomeTimeout,
-				fmt.Errorf("job timed out after %ds (during compilation)", r.Job.Timeout)
+			return js.JobArtifacts{}, types.OutcomeTimeout, ErrJobTimeout
 		}
 
-		// Genuine compilation error
-		return jobsession.JobArtifacts{}, types.OutcomeCompilationError,
+		return js.JobArtifacts{}, types.OutcomeCompilationError,
 			fmt.Errorf("compilation failed on %s: %w", failedWorker, compileErr)
 	}
 
@@ -122,22 +119,15 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 	r.SessionLogger.SetPhase(types.PhaseRunning, "Collecting artifacts...")
 	artifacts := r.collectArtifacts()
 
-	r.mu.Lock()
-	userCancelled := r.canceledByUser
-	r.mu.Unlock()
-
-	// 1. User cancellation must dominate execution errors
+	userCancelled = r.CanceledByUser()
 	if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
-		return artifacts, types.OutcomeCanceled, errors.New("job canceled by user")
+		return artifacts, types.OutcomeCanceled, ErrUserCancelled
 	}
 
-	// 2. Timeout
 	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
-		return artifacts, types.OutcomeTimeout,
-			fmt.Errorf("job timed out after %ds", r.Job.Timeout)
+		return artifacts, types.OutcomeTimeout, ErrJobTimeout
 	}
 
-	// 3. Genuine execution failure
 	if execErr != nil {
 		return artifacts, types.OutcomeFailed, execErr
 	}
@@ -220,7 +210,7 @@ func (r *JobRun) executeAll() error {
 	return nil
 }
 
-func (r *JobRun) collectArtifacts() jobsession.JobArtifacts {
+func (r *JobRun) collectArtifacts() js.JobArtifacts {
 	var results []dt.TestResult
 	var logs []t.TraceEvent
 	var logsMu sync.Mutex
@@ -267,7 +257,7 @@ func (r *JobRun) collectArtifacts() jobsession.JobArtifacts {
 
 	wg.Wait()
 
-	return jobsession.JobArtifacts{
+	return js.JobArtifacts{
 		TestResults:     results,
 		NodeMessageLogs: logs,
 	}

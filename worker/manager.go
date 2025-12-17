@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/google/uuid"
 )
@@ -124,7 +125,9 @@ func (wm *WorkerManager) ReleaseJob(jobID uuid.UUID) error {
 	wm.mu.Unlock()
 
 	if err := wm.removeWorkers(reservedWorkers); err != nil {
-		return fmt.Errorf("failed to release workers for job %d: %v", jobID, err)
+		return fmt.Errorf("failed to release workers for job %s: %v", jobID.String(), err)
+	} else {
+		log.Logger.Infof("Released workers for job %s", jobID.String())
 	}
 
 	return nil
