@@ -12,10 +12,8 @@ import (
 // PublishStreamingEvents establishes a long-lived connection and channel to RabbitMQ
 // and continuously publishes events received from the 'events' channel.
 // It uses ReconnectorRabbitMQ to automatically handle reconnections on failure.
-func PublishStreamingEvents(ctx context.Context, events <-chan types.StreamingJobEvent) error {
+func PublishStreamingEvents(ctx context.Context, url string, events <-chan types.StreamingJobEvent) error {
 	queueName := "results"
-	url := "amqp://guest:guest@localhost:5672/"
-
 	return ReconnectorRabbitMQ(ctx, url, queueName,
 		// Setup function: runs once per successful connection to declare the queue.
 		func(ch *amqp.Channel) error {
