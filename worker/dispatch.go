@@ -92,21 +92,15 @@ func (d *JobDispatcher) Run(ctx context.Context) {
 		case cancelReq := <-d.cancelJobChan:
 			go d.cancelJob(cancelReq)
 
-		case <-d.capacity:
-			select {
-			case job := <-d.jobChannel:
-				d.activeJobsWg.Go(func() {
-					defer func() { d.capacity <- struct{}{} }()
+		case job := <-d.jobChannel:
+			<-d.capacity
 
-					d.metricsCollector.IncCurrentJobs()
-					d.processJob(ctx, job)
-					d.metricsCollector.DecCurrentJobs()
-				})
-
-			case <-ctx.Done():
-				d.capacity <- struct{}{}
-				return
-			}
+			d.activeJobsWg.Go(func() {
+				defer func() { d.capacity <- struct{}{} }()
+				d.metricsCollector.IncCurrentJobs()
+				d.processJob(ctx, job)
+				d.metricsCollector.DecCurrentJobs()
+			})
 		}
 	}
 }
