@@ -26,11 +26,10 @@ func main() {
 
 	log.Init(l.DebugLevel, true)
 	// Parse command line flags
-	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
+	workerImageName, numWorkers := setup.ParseFlags()
 	log.Logger.WithFields(l.Fields{
-		"worker_image":  workerImageName,
-		"num_workers":   numWorkers,
-		"jobs_capacity": jobsCapacity,
+		"worker_image": workerImageName,
+		"num_workers":  numWorkers,
 	}).Info("Application initialized")
 
 	// Setup context, docker client, ensure the worker image is available and prepare worker cache.
@@ -41,9 +40,9 @@ func main() {
 	defer appResources.Cancel()
 	defer appResources.DockerCli.Close()
 
-	jobsCh := make(chan types.Job, jobsCapacity)
-	resultsCh := make(chan types.StreamingJobEvent, jobsCapacity)
-	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
+	jobsCh := make(chan types.Job)
+	resultsCh := make(chan types.StreamingJobEvent, 10_000)
+	cancelJobCh := make(chan types.CancelJobRequest, 10)
 
 	defer close(resultsCh)
 
@@ -78,7 +77,6 @@ func main() {
 		worker.NewDockerNetworkManager(appResources.DockerCli),
 		db.NewJobRepository(appResources.DB),
 		m,
-		jobsCapacity,
 	)
 
 	dispatcherDone := make(chan struct{})

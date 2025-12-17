@@ -13,7 +13,7 @@ import (
 
 func StartJobConsumer(ctx context.Context, url string, jobs chan<- types.Job) error {
 	queueName := "jobs"
-	jobRequests := make(chan types.JobRequest, 10)
+	jobRequests := make(chan types.JobRequest)
 
 	// Goroutine to map JobRequest -> Job
 	go func() {

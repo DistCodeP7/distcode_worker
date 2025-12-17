@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseFlagsDefaults(t *testing.T) {
-	workerImage, workers, capacity := ParseFlags()
+	workerImage, workers := ParseFlags()
 
 	if workerImage != "ghcr.io/distcodep7/dsnet:latest" {
 		t.Errorf("Expected default image 'ghcr.io/distcodep7/dsnet:latest', got '%s'", workerImage)
@@ -15,9 +15,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if workers != defaultNumWorkers {
 		t.Errorf("Expected default workers %d, got %d", defaultNumWorkers, workers)
 	}
-	if capacity != defaultNumWorkers*2 {
-		t.Errorf("Expected default capacity 2 * %d, got %d", defaultNumWorkers, capacity)
-	}
+
 }
 
 func TestParseFlagsWithCustomValues(t *testing.T) {
@@ -26,17 +24,14 @@ func TestParseFlagsWithCustomValues(t *testing.T) {
 	// Save original os.Args and restore after test
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
-	os.Args = []string{"cmd", "-iw", "customworkerimage:latest", "-w", "10", "-c", "50"}
+	os.Args = []string{"cmd", "-iw", "customworkerimage:latest", "-w", "10"}
 
-	workerImage, workers, capacity := ParseFlags()
+	workerImage, workers := ParseFlags()
 
 	if workerImage != "customworkerimage:latest" {
 		t.Errorf("Expected image 'customworkerimage:latest', got '%s'", workerImage)
 	}
 	if workers != 10 {
 		t.Errorf("Expected workers 10, got %d", workers)
-	}
-	if capacity != 50 {
-		t.Errorf("Expected capacity 50, got %d", capacity)
 	}
 }

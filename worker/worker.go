@@ -89,7 +89,7 @@ func NewWorker(ctx context.Context, cli NewWorkerCli, workerImageName string, sp
 		},
 		Resources: container.Resources{
 			CPUShares:      512,
-			NanoCPUs:       200_000_000,
+			NanoCPUs:       1_000_000_000,
 			Memory:         512 * 1024 * 1024,
 			MemorySwap:     1024 * 1024 * 1024,
 			PidsLimit:      utils.PtrInt64(1024),

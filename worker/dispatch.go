@@ -18,16 +18,16 @@ import (
 
 // WorkerManagerInterface manages worker reservation and lifecycle
 type WorkerManagerInterface interface {
-	ReserveWorkers(jobID uuid.UUID, testSpec types.NodeSpec, submissionSpecs []types.NodeSpec) (WorkUnit, []WorkUnit, error)
+	ReserveSlotsOrWait(ctx context.Context, count int) error
+	CreateWorkers(ctx context.Context, jobID uuid.UUID, testSpec types.NodeSpec, submissionSpecs []types.NodeSpec) (WorkUnit, []WorkUnit, error)
+	DiscardReservation(count int)
 	ReleaseJob(jobID uuid.UUID) error
 }
 
-// NetworkManagerInterface creates and connects workers to a network
 type NetworkManagerInterface interface {
 	CreateAndConnect(ctx context.Context, workers []Worker) (cleanup func(), networkName string, err error)
 }
 
-// JobDispatcher orchestrates job execution across workers
 type JobDispatcher struct {
 	cancelJobChan    <-chan types.CancelJobRequest
 	jobChannel       <-chan types.Job
@@ -42,8 +42,6 @@ type JobDispatcher struct {
 	activeJobs   map[string]*JobRun
 	activeJobsWg sync.WaitGroup
 
-	capacity chan struct{}
-
 	cancellationTracker *cancel.CancellationTracker
 }
 
@@ -55,7 +53,6 @@ func NewJobDispatcher(
 	networkManager NetworkManagerInterface,
 	jobStore db.JobStore,
 	metricsCollector metrics.JobMetricsCollector,
-	maxConcurrentJobs int,
 	opts ...func(*JobDispatcher),
 ) *JobDispatcher {
 	d := &JobDispatcher{
@@ -68,12 +65,7 @@ func NewJobDispatcher(
 		metricsCollector:    metricsCollector,
 		clock:               clockwork.NewRealClock(),
 		activeJobs:          make(map[string]*JobRun),
-		capacity:            make(chan struct{}, maxConcurrentJobs),
 		cancellationTracker: cancel.NewCancellationTracker(5*time.Minute, 1*time.Minute),
-	}
-
-	for range maxConcurrentJobs {
-		d.capacity <- struct{}{}
 	}
 
 	for _, opt := range opts {
@@ -82,34 +74,76 @@ func NewJobDispatcher(
 	return d
 }
 
-// Run starts the dispatcher loop
 func (d *JobDispatcher) Run(ctx context.Context) {
 	go d.cancellationTracker.StartGC(ctx)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Logger.Info("Dispatcher stopping, waiting for active jobs to finish...")
+			log.Logger.Info("Dispatcher stopping...")
 			d.activeJobsWg.Wait()
-			log.Logger.Info("All jobs finished. Dispatcher exiting.")
 			return
 
 		case cancelReq := <-d.cancelJobChan:
 			d.handleCancelRequest(cancelReq)
 
 		case job := <-d.jobChannel:
-			<-d.capacity
-
-			d.activeJobsWg.Go(func() {
-				defer func() { d.capacity <- struct{}{} }()
-				d.metricsCollector.IncCurrentJobs()
-				d.processJob(ctx, job)
-				d.metricsCollector.DecCurrentJobs()
-			})
+			neededSlots := 1 + len(job.SubmissionNodes)
+			if err := d.waitForSlots(ctx, job, neededSlots); err != nil {
+				continue
+			}
+			d.activeJobsWg.Add(1)
+			go d.processJob(ctx, job, neededSlots)
 		}
 	}
 }
 
-// Renamed from cancelJob to handleCancelRequest to reflect dual logic
+// waitForSlots blocks until the WorkerManager reserves the count.
+// It actively listens to d.cancelJobChan to allow cancelling the *waiting* job.
+func (d *JobDispatcher) waitForSlots(ctx context.Context, job types.Job, count int) error {
+	if d.cancellationTracker.IsCancelled(job.JobUID) {
+		d.failCancelledJob(job, "cancelled before reservation")
+		return context.Canceled
+	}
+
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	defer cancelWait()
+
+	errCh := make(chan error, 1)
+
+	go func() {
+		errCh <- d.workerManager.ReserveSlotsOrWait(waitCtx, count)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case cancelReq := <-d.cancelJobChan:
+			d.handleCancelRequest(cancelReq)
+			if cancelReq.JobUID == job.JobUID {
+				log.Logger.Infof("Job %s cancelled while waiting for slots", job.JobUID)
+				cancelWait()
+			}
+
+		case err := <-errCh:
+			if err != nil {
+				if err == context.Canceled {
+					d.failCancelledJob(job, "cancelled during reservation")
+				} else if _, ok := err.(*ErrorReserveTooManyWorkers); ok {
+					log.Logger.Warnf("Job %s requests too many workers: %v", job.JobUID.String(), err)
+					d.finalizeJob(job, jobsession.NewJobSession(job, d.resultsChannel), jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("requested too many workers: %w", err))
+				} else {
+					log.Logger.Warnf("Failed to reserve slots for job %s: %v, THIS SHOULDNT HAPPEN", job.JobUID.String(), err)
+					d.finalizeJob(job, jobsession.NewJobSession(job, d.resultsChannel), jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("failed to reserve slots: %w", err))
+				}
+				return err
+			}
+			return nil
+		}
+	}
+}
+
 func (d *JobDispatcher) handleCancelRequest(req types.CancelJobRequest) {
 	d.mu.Lock()
 	jobRun, isActive := d.activeJobs[req.JobUID.String()]
@@ -130,12 +164,12 @@ func (d *JobDispatcher) failCancelledJob(job types.Job, reason string) {
 	d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeCanceled, fmt.Errorf("%s", reason))
 }
 
-// processJob orchestrates the lifecycle strictly and linearly
-func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
-	if d.cancellationTracker.IsCancelled(job.JobUID) {
-		d.failCancelledJob(job, "cancelled before start")
-		return
-	}
+// processJob handles creation, execution, and cleanup.
+// It assumes 'reservedSlots' have already been secured.
+func (d *JobDispatcher) processJob(ctx context.Context, job types.Job, reservedSlots int) {
+	defer d.activeJobsWg.Done()
+	d.metricsCollector.IncCurrentJobs()
+	defer d.metricsCollector.DecCurrentJobs()
 
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
 	d.metricsCollector.IncJobTotal()
@@ -143,10 +177,17 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 	session := jobsession.NewJobSession(job, d.resultsChannel)
 	session.SetPhase(types.PhasePending, "Initializing...")
 
+	if d.cancellationTracker.IsCancelled(job.JobUID) {
+		d.workerManager.DiscardReservation(reservedSlots)
+		d.failCancelledJob(job, "cancelled before worker creation")
+		return
+	}
+
 	session.SetPhase(types.PhaseReserving, "Reserving workers...")
-	testUnit, submissionUnits, err := d.requestWorkers(ctx, job)
+	testUnit, submissionUnits, err := d.workerManager.CreateWorkers(ctx, job.JobUID, job.TestNode, job.SubmissionNodes)
 	if err != nil {
-		d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("worker reservation failed: %w", err))
+		d.workerManager.DiscardReservation(reservedSlots)
+		d.finalizeJob(job, session, jobsession.JobArtifacts{}, types.OutcomeFailed, fmt.Errorf("worker creation failed: %w", err))
 		return
 	}
 	defer d.workerManager.ReleaseJob(job.JobUID)
@@ -209,30 +250,12 @@ func (d *JobDispatcher) finalizeJob(
 	}
 }
 
-func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) (WorkUnit, []WorkUnit, error) {
-	for {
-		testWorker, submissionWorkers, err := d.workerManager.ReserveWorkers(job.JobUID, job.TestNode, job.SubmissionNodes)
-		if err == nil {
-			return testWorker, submissionWorkers, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return WorkUnit{}, nil, ctx.Err()
-		case <-d.clock.After(200 * time.Millisecond):
-			// Retry loop
-		}
-	}
-}
-
-// registerActiveJob adds the job to active tracking
 func (d *JobDispatcher) registerActiveJob(run *JobRun) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.activeJobs[run.GetID().String()] = run
 }
 
-// unregisterActiveJob removes the job from active tracking
 func (d *JobDispatcher) unregisterActiveJob(run *JobRun) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
