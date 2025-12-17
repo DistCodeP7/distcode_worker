@@ -139,10 +139,9 @@ func (d *JobDispatcher) processJob(ctx context.Context, job types.Job) {
 		return
 	}
 	defer cleanupNet()
-
 	jobRun := NewJobRun(ctx, job, testUnit, submissionUnits, session)
 	d.registerActiveJob(jobRun)
-	defer d.unregisterActiveJob(job.JobUID)
+	defer d.unregisterActiveJob(jobRun)
 
 	artifacts, outcome, err := jobRun.Execute()
 	d.finalizeJob(job, session, artifacts, outcome, err)
@@ -201,14 +200,14 @@ func (d *JobDispatcher) requestWorkers(ctx context.Context, job types.Job) (Work
 func (d *JobDispatcher) registerActiveJob(run *JobRun) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.activeJobs[run.ID.String()] = run
+	d.activeJobs[run.GetID().String()] = run
 }
 
 // unregisterActiveJob removes the job from active tracking
-func (d *JobDispatcher) unregisterActiveJob(id uuid.UUID) {
+func (d *JobDispatcher) unregisterActiveJob(run *JobRun) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	delete(d.activeJobs, id.String())
+	delete(d.activeJobs, run.GetID().String())
 }
 
 // CancelJob delegates cancellation to the specific JobRun

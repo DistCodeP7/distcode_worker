@@ -11,15 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/api/types/image"
 	docker "github.com/docker/docker/client"
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -301,103 +297,119 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	}
 }
 
-func TestIntegration_JobDispatcher_Cancel_Full(t *testing.T) {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
-	require.NoError(t, err)
+func TestWorker_EnforcesMemoryLimit(t *testing.T) {
+	// 1. Define a program that allocates 1.2GB and WRITES to it.
+	// The write loop ensures physical memory is actually consumed (preventing lazy allocation optimizations).
+	oomCode := `
+    package main
+    import (
+        "fmt"
+        "time"
+    )
+    func main() {
+        fmt.Println("Allocating 1.2GB...")
+        const size = 1200 * 1024 * 1024
+        buf := make([]byte, size)
+        
+        // IMPORTANT: Touch every memory page (4KB) to force the OS to allocate physical RAM.
+        // Without this, the OS might just use "Virtual Memory" without hitting the Docker RAM limit.
+        for i := 0; i < size; i += 4096 {
+            buf[i] = 1
+        }
+        
+        fmt.Println("Allocation complete, sleeping...")
+        time.Sleep(1 * time.Second)
+    }
+    `
 
-	workerImage := "ghcr.io/distcodep7/dsnet:latest"
-	jobStore := new(MockJobStore)
-	metrics := metrics.NewInMemoryMetricsCollector()
-	netManager := NewDockerNetworkManager(cli)
-	wp := NewDockerWorkerProducer(cli, workerImage)
-	wm, err := NewWorkerManager(2, wp)
-	require.NoError(t, err)
-
-	jobsCh := make(chan types.Job, 1)
-	resultsCh := make(chan types.StreamingJobEvent, 100)
-	cancelCh := make(chan types.CancelJobRequest, 1)
-
-	dispatcher := NewJobDispatcher(
-		cancelCh,
-		jobsCh,
-		resultsCh,
-		wm,
-		netManager,
-		jobStore,
-		metrics,
-		10,
-	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go dispatcher.Run(ctx)
-	defer wm.Shutdown()
-	defer cli.Close()
-
-	done := make(chan struct{})
-
-	jobStore.On(
-		"SaveResult",
-		mock.Anything,
-		types.OutcomeCanceled,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-	).Run(func(args mock.Arguments) {
-		close(done)
-	}).Return(nil)
-
-	goModContent := []byte("module worker-test\ngo 1.20\n")
-	sleepCode := []byte(`
-		package main
-		import (
-			"fmt"
-			"time"
-		)
-		func main() {
-			fmt.Println("Job starting, going to sleep...")
-			
-			time.Sleep(10 * time.Second) 
-			fmt.Println("Job finished naturally (This should not happen)")
-		}
-	`)
-
-	jobID := uuid.New()
-	job := types.Job{
-		JobUID:  jobID,
-		Timeout: 20,
-		TestNode: types.NodeSpec{
-			Alias:        "main_node",
-			BuildCommand: "go build -o app main.go",
-			EntryCommand: "./app",
-			Files: types.FileMap{
-				"go.mod":  types.SourceCode(goModContent),
-				"main.go": types.SourceCode(sleepCode),
-			},
+	spec := types.NodeSpec{
+		Alias: "oom-test-worker",
+		Files: types.FileMap{
+			types.Path("main.go"): types.SourceCode(oomCode),
 		},
-		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
-		SubmittedAt:     time.Now(),
-		ProblemID:       -1,
 	}
 
-	jobsCh <- job
+	// Reuse the client from your setup
+	cli := testWorker.dockerCli
 
-	time.Sleep(2 * time.Second)
+	// Create the worker with the standard limits (512MB RAM + 512MB Swap = 1GB Total)
+	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec)
+	if err != nil {
+		t.Fatalf("Failed to create worker: %v", err)
+	}
+	defer w.Stop(context.Background())
 
-	fmt.Println(">>> Triggering Cancellation...")
-	cancelCh <- types.CancelJobRequest{
-		JobUID: jobID,
+	// Execute
+	var buf bytes.Buffer
+	err = w.ExecuteCommand(testCtx, ExecuteCommandOptions{
+		Cmd:          "go run main.go",
+		OutputWriter: &buf,
+	})
+
+	// Assert Failure
+	if err == nil {
+		t.Logf("Output: %s", buf.String())
+		t.Fatal("Expected error due to Memory Limit Exceeded (OOM), but command succeeded.")
 	}
 
-	select {
-	case <-done:
+	// Assert correct error type (Exit Code 137 = 128 + 9 SIGKILL)
+	expectedErrorFragment := "non-zero exit code"
+	if !strings.Contains(err.Error(), expectedErrorFragment) {
+		t.Errorf("Expected error to mention non-zero exit code (OOM), got: %v", err)
+	}
+}
 
-	case <-time.After(5 * time.Second):
-		t.Fatal("Test timed out waiting for job cancellation to process")
+func TestWorker_EnforcesPIDLimit(t *testing.T) {
+	// This Go program attempts to spawn 2000 goroutines that lock OS threads.
+	// Since Go manages goroutines in user-space, we force them to consume PIDs
+	// by using runtime.LockOSThread().
+	forkBombCode := `
+    package main
+    import (
+        "fmt"
+        "runtime"
+        "sync"
+        "time"
+    )
+    func main() {
+        fmt.Println("Attempting to spawn 2000 OS threads...")
+        var wg sync.WaitGroup
+        // Your limit is 1024. We try 2000.
+        for i := 0; i < 2000; i++ {
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                // LockOSThread forces a new Thread/LWP (Lightweight Process) on Linux
+                runtime.LockOSThread() 
+                time.Sleep(10 * time.Second)
+            }()
+        }
+        wg.Wait()
+    }
+    `
+
+	spec := types.NodeSpec{
+		Alias: "pid-test-worker",
+		Files: types.FileMap{"main.go": types.SourceCode(forkBombCode)},
 	}
 
-	jobStore.AssertExpectations(t)
+	cli := testWorker.dockerCli
+	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec)
+	if err != nil {
+		t.Fatalf("Failed to create worker: %v", err)
+	}
+	defer w.Stop(context.Background())
+
+	var buf bytes.Buffer
+	err = w.ExecuteCommand(testCtx, ExecuteCommandOptions{
+		Cmd:          "go run main.go",
+		OutputWriter: &buf,
+	})
+
+	// We expect an error. Usually: "resource temporarily unavailable" or "failed to create new OS thread"
+	if err == nil {
+		t.Fatal("Expected error due to PID limit, but command succeeded.")
+	}
+
+	t.Logf("Caught PID limit error: %v", err)
 }

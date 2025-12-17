@@ -22,9 +22,8 @@ import (
 // It is created by the Dispatcher and is responsible for the specific
 // Compile -> Run -> Collect pipeline.
 type JobRun struct {
-	ID              uuid.UUID
 	Job             types.Job
-	Session         *jobsession.JobSessionLogger
+	SessionLogger   *jobsession.JobSessionLogger
 	SubmissionUnits []WorkUnit
 	TestUnit        WorkUnit
 	AllUnits        []WorkUnit
@@ -32,8 +31,6 @@ type JobRun struct {
 	cancel          context.CancelFunc
 	mu              sync.Mutex
 	canceledByUser  bool
-	finished        bool
-	debugEnabled    bool
 }
 
 type WorkUnit struct {
@@ -50,21 +47,25 @@ func NewJobRun(
 ) *JobRun {
 	jobCtx, cancel := context.WithTimeout(parentCtx, time.Duration(job.Timeout)*time.Second)
 
+	log.Logger.Infof("Job %s: Timeout set to %d seconds", job.JobUID.String(), job.Timeout)
 	allUnits := make([]WorkUnit, 0, 1+len(sUnits))
 	allUnits = append(allUnits, tUnit)
 	allUnits = append(allUnits, sUnits...)
 
 	return &JobRun{
-		ID:              job.JobUID,
 		Job:             job,
 		SubmissionUnits: sUnits,
 		TestUnit:        tUnit,
 		AllUnits:        allUnits,
-		Session:         session,
+		SessionLogger:   session,
 		ctx:             jobCtx,
 		cancel:          cancel,
-		debugEnabled:    true,
 	}
+}
+
+// GetID returns the unique job identifier.
+func (r *JobRun) GetID() uuid.UUID {
+	return r.Job.JobUID
 }
 
 // Cancel terminates the job.
@@ -73,39 +74,30 @@ func (r *JobRun) Cancel(byUser bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.finished {
-		return
-	}
-
 	if byUser {
 		r.canceledByUser = true
 	}
 	r.cancel()
 }
 
+func (r *JobRun) CanceledByUser() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.canceledByUser
+}
+
 // Execute runs the full job pipeline.
 // It returns artifacts, the final outcome, and any error that occurred.
 func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 	defer func() {
-		r.mu.Lock()
-		r.finished = true
-		r.mu.Unlock()
 		r.cancel()
 	}()
 
-	if r.debugEnabled {
-		r.Session.SetPhase(types.PhaseDebugging, "Debugging enabled. Dumping go.mod and file tree...")
-		_ = r.ExecuteCommandOnAllUnits("cat go.mod && ls -R")
-	}
-
-	r.Session.SetPhase(types.PhaseCompiling, "Compiling code...")
+	r.SessionLogger.SetPhase(types.PhaseCompiling, "Compiling code...")
 	compileSuccess, failedWorker, compileErr := r.compileAll()
 
-	// Handle cancel/timeout BEFORE treating it as a plain compilation error
 	if !compileSuccess {
-		r.mu.Lock()
-		userCancelled := r.canceledByUser
-		r.mu.Unlock()
+		userCancelled := r.CanceledByUser()
 
 		// User explicitly cancelled
 		if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
@@ -124,65 +116,33 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 			fmt.Errorf("compilation failed on %s: %w", failedWorker, compileErr)
 	}
 
-	r.Session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
+	r.SessionLogger.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
 	execErr := r.executeAll()
 
-	r.Session.SetPhase(types.PhaseRunning, "Collecting artifacts...")
+	r.SessionLogger.SetPhase(types.PhaseRunning, "Collecting artifacts...")
 	artifacts := r.collectArtifacts()
 
 	r.mu.Lock()
 	userCancelled := r.canceledByUser
 	r.mu.Unlock()
 
-	// Still necessary to check for user cancellation here as a user can
-	// cancel even after compilation succeeds.
-	if userCancelled {
+	// 1. User cancellation must dominate execution errors
+	if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
 		return artifacts, types.OutcomeCanceled, errors.New("job canceled by user")
 	}
 
+	// 2. Timeout
 	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
 		return artifacts, types.OutcomeTimeout,
 			fmt.Errorf("job timed out after %ds", r.Job.Timeout)
 	}
 
+	// 3. Genuine execution failure
 	if execErr != nil {
 		return artifacts, types.OutcomeFailed, execErr
 	}
 
 	return artifacts, types.OutcomeSuccess, nil
-}
-
-func (r *JobRun) ExecuteCommandOnAllUnits(cmd string) error {
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(r.AllUnits))
-
-	for _, unit := range r.AllUnits {
-		wg.Go(func() {
-			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
-			fmt.Fprintf(logWriter, "Executing command: %s\n", cmd)
-
-			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
-				Cmd:          cmd,
-				OutputWriter: logWriter,
-			})
-			if err != nil {
-				errCh <- fmt.Errorf("command execution failed on worker %s: %w", unit.Worker.ID()[:12], err)
-
-				// Fail Fast: If one node crashes, cancel the others to save resources
-				r.cancel()
-			}
-		})
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	for err := range errCh {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (r *JobRun) compileAll() (bool, string, error) {
@@ -199,7 +159,7 @@ func (r *JobRun) compileAll() (bool, string, error) {
 		}
 
 		wg.Go(func() {
-			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
+			logWriter := r.SessionLogger.NewLogWriter(unit.Worker.Alias())
 			fmt.Fprintf(logWriter, "Running build: %s\n", unit.Spec.BuildCommand)
 
 			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
@@ -232,7 +192,7 @@ func (r *JobRun) executeAll() error {
 
 	for _, unit := range r.AllUnits {
 		wg.Go(func() {
-			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
+			logWriter := r.SessionLogger.NewLogWriter(unit.Worker.Alias())
 			fmt.Fprintf(logWriter, "Executing: %s\n", unit.Spec.EntryCommand)
 
 			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
