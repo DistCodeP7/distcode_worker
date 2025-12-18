@@ -12,8 +12,8 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if workerImage != "ghcr.io/distcodep7/dsnet:latest" {
 		t.Errorf("Expected default image 'ghcr.io/distcodep7/dsnet:latest', got '%s'", workerImage)
 	}
-	if workers != defaultNumWorkers {
-		t.Errorf("Expected default workers %d, got %d", defaultNumWorkers, workers)
+	if workers != DefaultNumWorkers {
+		t.Errorf("Expected default workers %d, got %d", DefaultNumWorkers, workers)
 	}
 
 }

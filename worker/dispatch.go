@@ -168,11 +168,10 @@ func (d *JobDispatcher) failCancelledJob(job types.Job, reason string) {
 // It assumes 'reservedSlots' have already been secured.
 func (d *JobDispatcher) processJob(ctx context.Context, job types.Job, reservedSlots int) {
 	defer d.activeJobsWg.Done()
-	d.metricsCollector.IncCurrentJobs()
-	defer d.metricsCollector.DecCurrentJobs()
+	endJob := d.metricsCollector.StartJob()
+	defer endJob()
 
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
-	d.metricsCollector.IncJobTotal()
 
 	session := jobsession.NewJobSession(job, d.resultsChannel)
 	session.SetPhase(types.PhasePending, "Initializing...")
@@ -225,12 +224,15 @@ func (d *JobDispatcher) finalizeJob(
 	outcome types.Outcome,
 	err error,
 ) {
+
+	var timeSpent map[types.Phase]time.Duration
 	if outcome == types.OutcomeSuccess {
-		session.FinishSuccess(artifacts)
+		timeSpent = session.FinishSuccess(artifacts)
 	} else {
-		session.FinishFail(artifacts, outcome, err, "")
+		timeSpent = session.FinishFail(artifacts, outcome, err, "")
 	}
 
+	d.metricsCollector.TrackTimeSpent(timeSpent)
 	d.metricsCollector.IncJobOutcome(outcome)
 	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

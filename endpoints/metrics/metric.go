@@ -1,12 +1,14 @@
 package metrics
 
-import "github.com/DistCodeP7/distcode_worker/types"
+import (
+	"time"
+
+	"github.com/DistCodeP7/distcode_worker/types"
+)
 
 type JobMetricsCollector interface {
-	IncJobTotal()
-	IncJobOutcome(outcome types.Outcome)
-	IncCurrentJobs()
-	DecCurrentJobs()
-	ObserveJobDuration(seconds float64)
 	JSON() []byte
+	StartJob() func()
+	IncJobOutcome(outcome types.Outcome)
+	TrackTimeSpent(timeSpent map[types.Phase]time.Duration)
 }

@@ -3,8 +3,8 @@ package setup
 import "flag"
 
 const (
-	defaultWorkerImage = "ghcr.io/distcodep7/dsnet:latest"
-	defaultNumWorkers  = 10
+	DefaultWorkerImage = "ghcr.io/distcodep7/dsnet:latest"
+	DefaultNumWorkers  = 10
 )
 
 // ParseFlags parses command-line flags for configuring the worker image, number of workers, and jobs channel capacity.
@@ -16,8 +16,8 @@ const (
 //	-w int: The number of worker goroutines to start (default 4).
 //	-c int: The capacity of the jobs channel (default 2 * workers).
 func ParseFlags() (string, int) {
-	workerImageName := flag.String("iw", defaultWorkerImage, "The Docker image to use for workers")
-	numWorkers := flag.Int("w", defaultNumWorkers, "The number of worker goroutines to start")
+	workerImageName := flag.String("iw", DefaultWorkerImage, "The Docker image to use for workers")
+	numWorkers := flag.Int("w", DefaultNumWorkers, "The number of worker goroutines to start")
 
 	if *workerImageName == "" {
 		panic("DSNet worker image not found")

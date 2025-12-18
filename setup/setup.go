@@ -23,7 +23,7 @@ import (
 type AppResources struct {
 	Ctx             context.Context
 	Cancel          context.CancelFunc
-	DockerCli       dockercli.Client
+	DockerCli       dockercli.DockerClient
 	WorkerImage     string
 	ControllerImage string
 	DB              db.Repository
@@ -68,15 +68,15 @@ func SetupApp(workerImageName string) (*AppResources, error) {
 	}
 
 	log.Logger.WithFields(logrus.Fields{
-		"worker_image":     effectiveWorkerImage,
+		"worker_image": effectiveWorkerImage,
 	}).Info("Application setup completed successfully")
 
 	return &AppResources{
-		Ctx:             ctx,
-		Cancel:          cancel,
-		DockerCli:       cli,
-		WorkerImage:     effectiveWorkerImage,
-		DB:              db,
+		Ctx:         ctx,
+		Cancel:      cancel,
+		DockerCli:   *cli,
+		WorkerImage: effectiveWorkerImage,
+		DB:          db,
 	}, nil
 }
 

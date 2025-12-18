@@ -2,10 +2,12 @@ package dockercli
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -49,6 +51,7 @@ type NetworkConnector interface {
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
 	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 }
 
 // --- Aggregate Interfaces ---
@@ -70,7 +73,6 @@ type Client interface {
 }
 
 // --- Implementation ---
-
 type DockerClient struct {
 	*client.Client
 }
@@ -90,4 +92,29 @@ func NewClientFromEnv() (*DockerClient, error) {
 // NewClient wraps an existing raw docker client.
 func NewClient(cli *client.Client) *DockerClient {
 	return &DockerClient{Client: cli}
+}
+
+func (d *DockerClient) CleanupWorkers(ctx context.Context) ([]string, error) {
+	listFilters := filters.NewArgs()
+	listFilters.Add("label", "managed_by=distcode_worker")
+	containers, err := d.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: listFilters,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var removedIDs []string
+	for _, c := range containers {
+		err := d.ContainerRemove(ctx, c.ID, container.RemoveOptions{
+			Force: true,
+		})
+		if err != nil {
+			return removedIDs, fmt.Errorf("failed to remove container %s: %w", c.ID[:12], err)
+		}
+		removedIDs = append(removedIDs, c.ID)
+	}
+
+	return removedIDs, nil
 }

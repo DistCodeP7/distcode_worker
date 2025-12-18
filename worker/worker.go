@@ -77,6 +77,9 @@ func NewWorker(ctx context.Context, cli NewWorkerCli, workerImageName string, sp
 		Env:        envVars,
 		Tty:        false,
 		WorkingDir: "/app/tmp",
+		Labels: map[string]string{
+			"managed_by": "distcode_worker",
+		},
 	}
 
 	hostConfig := &container.HostConfig{

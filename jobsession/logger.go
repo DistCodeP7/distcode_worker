@@ -23,6 +23,10 @@ type JobSessionLogger struct {
 	outcome   types.Outcome
 	mu        sync.Mutex
 	logBuffer []types.LogEvent
+
+	// time spent in each phase
+	timeSpent map[types.Phase]time.Duration
+	clock     time.Time
 }
 
 // Constructor for JobSessionLogger
@@ -35,13 +39,22 @@ func NewJobSession(job types.Job, out chan<- types.StreamingJobEvent) *JobSessio
 		phase:     types.PhasePending,
 		outcome:   types.OutcomeSuccess, // Assumes success until failure
 		logBuffer: make([]types.LogEvent, 0, 100),
+		timeSpent: make(map[types.Phase]time.Duration),
+		clock:     time.Now(),
 	}
+}
+
+func (s *JobSessionLogger) trackPhaseTime(newPhase types.Phase) {
+	now := time.Now()
+	s.timeSpent[s.phase] += now.Sub(s.clock)
+	s.clock = now
+	s.phase = newPhase
 }
 
 // Used to update the current phase and send a status event
 func (s *JobSessionLogger) SetPhase(p types.Phase, msg string) {
 	s.mu.Lock()
-	s.phase = p
+	s.trackPhaseTime(p)
 	s.mu.Unlock()
 
 	s.out <- types.StreamingJobEvent{
@@ -126,8 +139,8 @@ type JobArtifacts struct {
 	NodeMessageLogs []testing.TraceEvent
 }
 
-func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
-	s.phase = types.PhaseCompleted
+func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) map[types.Phase]time.Duration {
+	s.trackPhaseTime(types.PhaseCompleted)
 
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
@@ -139,10 +152,12 @@ func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
 			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
 	}
+
+	return s.timeSpent
 }
 
-func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outcome, err error, workerID string) {
-	s.phase = types.PhaseCompleted
+func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outcome, err error, workerID string) map[types.Phase]time.Duration {
+	s.trackPhaseTime(types.PhaseCompleted)
 	s.outcome = outcome
 	errStr := ""
 	if err != nil {
@@ -161,4 +176,5 @@ func (s *JobSessionLogger) FinishFail(artifacts JobArtifacts, outcome types.Outc
 			NodeMessageLogs: artifacts.NodeMessageLogs,
 		},
 	}
+	return s.timeSpent
 }
