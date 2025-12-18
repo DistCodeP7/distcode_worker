@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/jackc/pgx/v5"
 
 	t "github.com/distcodep7/dsnet/testing"
@@ -22,6 +24,7 @@ type JobStore interface {
 		nodeMessageLogs []t.TraceEvent,
 		startTime time.Time,
 		job types.Job,
+		timeSpent utils.TimeSpentPayload,
 	) error
 }
 
@@ -43,6 +46,7 @@ func (jr *JobRepository) SaveResult(
 	nodeMessageLogs []t.TraceEvent,
 	startTime time.Time,
 	job types.Job,
+	timeSpent utils.TimeSpentPayload,
 ) error {
 	if testResults == nil {
 		testResults = []dt.TestResult{}
@@ -70,50 +74,48 @@ func (jr *JobRepository) SaveResult(
 	}
 	defer tx.Rollback(ctx)
 
-	updateQuery := `
+	// Insert job result
+	jobResultQuery := `
 		INSERT INTO job_results
-		(
-			outcome,
-			test_results,
-			duration,
-			logs,
-			finished_at,
-			queued_at,
-			job_uid,
-			user_id,
-			problem_id
-		)
-		VALUES($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
+		(outcome, test_results, duration, logs, finished_at, queued_at, job_uid, user_id, problem_id,
+		 time_compiling, time_running, time_reserving, time_pending, time_configuring_network)
+		VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,$8,$9,$10,$11,$12,$13)
 	`
-
-	_, err = tx.Exec(ctx, updateQuery,
-		string(outcomeJSON),
-		string(resultsJSON),
+	if _, err := tx.Exec(ctx, jobResultQuery,
+		outcomeJSON,
+		resultsJSON,
 		duration,
-		string(logsJSON),
+		logsJSON,
 		job.SubmittedAt,
 		job.JobUID,
 		job.UserID,
 		job.ProblemID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update job_results: %w", err)
+		timeSpent.Compiling,
+		timeSpent.Running,
+		timeSpent.Reserving,
+		timeSpent.Pending,
+		timeSpent.ConfiguringNetwork,
+	); err != nil {
+		return fmt.Errorf("insert job_results: %w", err)
 	}
 
 	if len(nodeMessageLogs) > 0 {
-		insertQuery := `
-			INSERT INTO job_process_messages
-			(job_uid, timestamp, "from", "to", event_type, message_type, vector_clock, payload, message_id, event_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		`
+		values := make([]interface{}, 0, len(nodeMessageLogs)*10)
+		placeholders := make([]string, 0, len(nodeMessageLogs))
 
-		for _, msg := range nodeMessageLogs {
+		for i, msg := range nodeMessageLogs {
 			vcJSON, err := json.Marshal(msg.VectorClock)
 			if err != nil {
-				return fmt.Errorf("failed to marshal vector clock: %w", err)
+				return fmt.Errorf("marshal vector clock: %w", err)
 			}
 
-			_, err = tx.Exec(ctx, insertQuery,
+			idx := i*10 + 1
+			placeholders = append(placeholders, fmt.Sprintf(
+				"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				idx, idx+1, idx+2, idx+3, idx+4, idx+5, idx+6, idx+7, idx+8, idx+9,
+			))
+
+			values = append(values,
 				job.JobUID,
 				msg.Timestamp,
 				msg.From,
@@ -125,14 +127,19 @@ func (jr *JobRepository) SaveResult(
 				msg.MessageID,
 				msg.ID,
 			)
-			if err != nil {
-				return fmt.Errorf("failed to insert node message log: %w", err)
-			}
+		}
+
+		insertQuery := `
+			INSERT INTO job_process_messages
+			(job_uid, timestamp, "from", "to", event_type, message_type, vector_clock, payload, message_id, event_id)
+			VALUES ` + strings.Join(placeholders, ",")
+
+		if _, err := tx.Exec(ctx, insertQuery, values...); err != nil {
+			return fmt.Errorf("insert node messages: %w", err)
 		}
 	}
-
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return nil

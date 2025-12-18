@@ -12,6 +12,7 @@ import (
 
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	tt "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/client"
@@ -32,8 +33,9 @@ func (m *MockJobStore) SaveResult(
 	nodeMessageLogs []tt.TraceEvent,
 	startTime time.Time,
 	job types.Job,
+	timeSpent utils.TimeSpentPayload,
 ) error {
-	args := m.Called(ctx, outcome, testResults, logs, nodeMessageLogs, startTime, job)
+	args := m.Called(ctx, outcome, testResults, logs, nodeMessageLogs, startTime, job, timeSpent)
 	return args.Error(0)
 }
 
@@ -98,6 +100,7 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -151,6 +154,7 @@ func TestIntegration_JobDispatcher_CancelLate(t *testing.T) {
 		"SaveResult",
 		mock.Anything,
 		types.OutcomeCanceled,
+		mock.Anything,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
@@ -220,6 +224,7 @@ func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -276,6 +281,7 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 		"SaveResult",
 		mock.Anything,
 		types.OutcomeCompilationError,
+		mock.Anything,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
@@ -352,6 +358,7 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
+		mock.Anything,
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -404,6 +411,7 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 		"SaveResult",
 		mock.Anything,
 		types.OutcomeTimeout,
+		mock.Anything,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
@@ -469,6 +477,7 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 		"SaveResult",
 		mock.Anything,
 		types.OutcomeSuccess,
+		mock.Anything,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,
@@ -582,6 +591,7 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 		"SaveResult",
 		mock.Anything,
 		types.OutcomeFailed,
+		mock.Anything,
 		mock.Anything,
 		mock.Anything,
 		mock.Anything,

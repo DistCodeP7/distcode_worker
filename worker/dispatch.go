@@ -12,6 +12,7 @@ import (
 	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 )
@@ -245,6 +246,7 @@ func (d *JobDispatcher) finalizeJob(
 		artifacts.NodeMessageLogs,
 		session.StartTime(),
 		job,
+		utils.MapToPayload(timeSpent),
 	)
 
 	if saveErr != nil {
