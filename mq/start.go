@@ -1,6 +1,8 @@
 package mq
 
 import (
+	"os"
+
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
@@ -14,20 +16,22 @@ type MQResources struct {
 }
 
 func StartJobHandlers(ressources MQResources) {
+	url := os.Getenv("MQ_URL")
+
 	go func() {
-		if err := StartJobConsumer(ressources.AppResources.Ctx, ressources.JobsCh); err != nil {
+		if err := StartJobConsumer(ressources.AppResources.Ctx, url, ressources.JobsCh); err != nil {
 			log.Logger.WithError(err).Error("MQ error")
 		}
 	}()
 
 	go func() {
-		if err := StartJobCanceller(ressources.AppResources.Ctx, ressources.CancelJobCh); err != nil {
+		if err := StartJobCanceller(ressources.AppResources.Ctx, url, ressources.CancelJobCh); err != nil {
 			log.Logger.WithError(err).Error("MQ error")
 		}
 	}()
 
 	go func() {
-		if err := PublishStreamingEvents(ressources.AppResources.Ctx, ressources.ResultsCh); err != nil {
+		if err := PublishStreamingEvents(ressources.AppResources.Ctx, url, ressources.ResultsCh); err != nil {
 			log.Logger.WithError(err).Fatal("MQ results publisher error")
 		}
 	}()

@@ -11,15 +11,14 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func StartJobConsumer(ctx context.Context, jobs chan<- types.Job) error {
+func StartJobConsumer(ctx context.Context, url string, jobs chan<- types.Job) error {
 	queueName := "jobs"
-	jobRequests := make(chan types.JobRequest, 10)
+	jobRequests := make(chan types.JobRequest)
 
 	// Goroutine to map JobRequest -> Job
 	go func() {
 		for req := range jobRequests {
 			job, err := mapper.ConvertToJobRequest(&req)
-			fmt.Print(job.SubmittedAt)
 			if err != nil {
 				log.Logger.WithError(err).Error("Failed to convert JobRequest to Job")
 				continue
@@ -28,7 +27,7 @@ func StartJobConsumer(ctx context.Context, jobs chan<- types.Job) error {
 		}
 	}()
 
-	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
+	return ReconnectorRabbitMQ(ctx, url, queueName,
 		func(ch *amqp.Channel) error {
 			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
 			return err
@@ -54,9 +53,9 @@ func StartJobConsumer(ctx context.Context, jobs chan<- types.Job) error {
 		})
 }
 
-func StartJobCanceller(ctx context.Context, jobs chan<- types.CancelJobRequest) error {
+func StartJobCanceller(ctx context.Context, url string, jobs chan<- types.CancelJobRequest) error {
 	queueName := "jobs_cancel"
-	return ReconnectorRabbitMQ(ctx, "amqp://guest:guest@localhost:5672/", queueName,
+	return ReconnectorRabbitMQ(ctx, url, queueName,
 		func(ch *amqp.Channel) error {
 			_, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
 			return err

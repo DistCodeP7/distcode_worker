@@ -47,9 +47,7 @@ func (w *DockerWorker) Alias() string {
 // Stop stops and removes the container. Logs only container stop/removal events.
 func (w *DockerWorker) Stop(ctx context.Context) error {
 	log.Logger.Tracef("Stopping container %s", w.containerID[:12])
-
-	timeout := 3
-	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: &timeout}); err != nil {
+	if err := w.dockerCli.ContainerStop(ctx, w.containerID, container.StopOptions{Timeout: utils.PtrInt(3)}); err != nil {
 		log.Logger.Warnf("Failed to gracefully stop container %s: %v", w.containerID[:12], err)
 	}
 
@@ -57,7 +55,6 @@ func (w *DockerWorker) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to forcefully remove container: %w", err)
 	}
 
-	log.Logger.Infof("Container %s stopped and removed", w.containerID[:12])
 	return nil
 }
 

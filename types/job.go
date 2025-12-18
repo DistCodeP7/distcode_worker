@@ -12,6 +12,7 @@ type JobRequest struct {
 	UserId      string           `json:"userId"`
 	Timeout     int              `json:"timeout"`
 	SubmittedAt time.Time        `json:"submittedAt"`
+	ProblemID   int              `json:"problemId"`
 }
 
 type ContainerConfigs struct {
@@ -47,4 +48,5 @@ type Job struct {
 	UserID          string
 	Timeout         time.Duration
 	SubmittedAt     time.Time
+	ProblemID       int
 }

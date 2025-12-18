@@ -8,11 +8,13 @@ import (
 type Phase string
 
 const (
-	PhaseDebugging Phase = "DEBUGGING"
-	PhasePending   Phase = "PENDING"
-	PhaseCompiling Phase = "COMPILING"
-	PhaseRunning   Phase = "RUNNING"
-	PhaseCompleted Phase = "COMPLETED"
+	PhaseDebugging          Phase = "DEBUGGING"
+	PhaseReserving          Phase = "RESERVING"
+	PhaseConfiguringNetwork Phase = "CONFIGURING_NETWORK"
+	PhasePending            Phase = "PENDING"
+	PhaseCompiling          Phase = "COMPILING"
+	PhaseRunning            Phase = "RUNNING"
+	PhaseCompleted          Phase = "COMPLETED"
 )
 
 type JobEventType string

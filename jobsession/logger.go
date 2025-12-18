@@ -40,12 +40,15 @@ func NewJobSession(job types.Job, out chan<- types.StreamingJobEvent) *JobSessio
 
 // Used to update the current phase and send a status event
 func (s *JobSessionLogger) SetPhase(p types.Phase, msg string) {
+	s.mu.Lock()
 	s.phase = p
+	s.mu.Unlock()
+
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
 		Type:   types.TypeStatus,
 		Status: &types.StatusEvent{
-			Phase:   string(s.phase),
+			Phase:   string(p),
 			Message: msg,
 		},
 	}
@@ -125,6 +128,7 @@ type JobArtifacts struct {
 
 func (s *JobSessionLogger) FinishSuccess(artifacts JobArtifacts) {
 	s.phase = types.PhaseCompleted
+
 	s.out <- types.StreamingJobEvent{
 		UserID: s.userID,
 		Type:   types.TypeResult,

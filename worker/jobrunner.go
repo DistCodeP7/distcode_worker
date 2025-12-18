@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DistCodeP7/distcode_worker/jobsession"
+	js "github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	t "github.com/distcodep7/dsnet/testing"
@@ -22,9 +22,8 @@ import (
 // It is created by the Dispatcher and is responsible for the specific
 // Compile -> Run -> Collect pipeline.
 type JobRun struct {
-	ID              uuid.UUID
 	Job             types.Job
-	Session         *jobsession.JobSessionLogger
+	SessionLogger   *js.JobSessionLogger
 	SubmissionUnits []WorkUnit
 	TestUnit        WorkUnit
 	AllUnits        []WorkUnit
@@ -32,8 +31,6 @@ type JobRun struct {
 	cancel          context.CancelFunc
 	mu              sync.Mutex
 	canceledByUser  bool
-	finished        bool
-	debugEnabled    bool
 }
 
 type WorkUnit struct {
@@ -46,25 +43,27 @@ func NewJobRun(
 	job types.Job,
 	tUnit WorkUnit,
 	sUnits []WorkUnit,
-	session *jobsession.JobSessionLogger,
+	session *js.JobSessionLogger,
 ) *JobRun {
 	jobCtx, cancel := context.WithTimeout(parentCtx, time.Duration(job.Timeout)*time.Second)
-
 	allUnits := make([]WorkUnit, 0, 1+len(sUnits))
 	allUnits = append(allUnits, tUnit)
 	allUnits = append(allUnits, sUnits...)
 
 	return &JobRun{
-		ID:              job.JobUID,
 		Job:             job,
 		SubmissionUnits: sUnits,
 		TestUnit:        tUnit,
 		AllUnits:        allUnits,
-		Session:         session,
+		SessionLogger:   session,
 		ctx:             jobCtx,
 		cancel:          cancel,
-		debugEnabled:    true,
 	}
+}
+
+// GetID returns the unique job identifier.
+func (r *JobRun) GetID() uuid.UUID {
+	return r.Job.JobUID
 }
 
 // Cancel terminates the job.
@@ -73,76 +72,60 @@ func (r *JobRun) Cancel(byUser bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.finished {
-		return
-	}
-
 	if byUser {
 		r.canceledByUser = true
 	}
 	r.cancel()
 }
 
+func (r *JobRun) CanceledByUser() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.canceledByUser
+}
+
+var (
+	ErrUserCancelled = errors.New("job canceled by user")
+	ErrJobTimeout    = errors.New("job execution timed out")
+)
+
 // Execute runs the full job pipeline.
 // It returns artifacts, the final outcome, and any error that occurred.
-func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
+func (r *JobRun) Execute() (js.JobArtifacts, types.Outcome, error) {
 	defer func() {
-		r.mu.Lock()
-		r.finished = true
-		r.mu.Unlock()
 		r.cancel()
 	}()
 
-	if r.debugEnabled {
-		r.Session.SetPhase(types.PhaseDebugging, "Debugging enabled. Dumping go.mod and file tree...")
-		_ = r.ExecuteCommandOnAllUnits("cat go.mod && ls -R")
-	}
-
-	r.Session.SetPhase(types.PhaseCompiling, "Compiling code...")
+	r.SessionLogger.SetPhase(types.PhaseCompiling, "Compiling code...")
 	compileSuccess, failedWorker, compileErr := r.compileAll()
 
-	// Handle cancel/timeout BEFORE treating it as a plain compilation error
+	userCancelled := r.CanceledByUser()
+	if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
+		return js.JobArtifacts{}, types.OutcomeCanceled, ErrUserCancelled
+	}
+
 	if !compileSuccess {
-		r.mu.Lock()
-		userCancelled := r.canceledByUser
-		r.mu.Unlock()
-
-		// User explicitly cancelled
-		if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
-			return jobsession.JobArtifacts{}, types.OutcomeCanceled,
-				errors.New("job canceled by user")
-		}
-
-		// Context timed out during compile
 		if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
-			return jobsession.JobArtifacts{}, types.OutcomeTimeout,
-				fmt.Errorf("job timed out after %ds (during compilation)", r.Job.Timeout)
+			return js.JobArtifacts{}, types.OutcomeTimeout, ErrJobTimeout
 		}
 
-		// Genuine compilation error
-		return jobsession.JobArtifacts{}, types.OutcomeCompilationError,
+		return js.JobArtifacts{}, types.OutcomeCompilationError,
 			fmt.Errorf("compilation failed on %s: %w", failedWorker, compileErr)
 	}
 
-	r.Session.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
+	r.SessionLogger.SetPhase(types.PhaseRunning, "Compilation successful. Executing...")
 	execErr := r.executeAll()
 
-	r.Session.SetPhase(types.PhaseRunning, "Collecting artifacts...")
+	r.SessionLogger.SetPhase(types.PhaseRunning, "Collecting artifacts...")
 	artifacts := r.collectArtifacts()
 
-	r.mu.Lock()
-	userCancelled := r.canceledByUser
-	r.mu.Unlock()
-
-	// Still necessary to check for user cancellation here as a user can
-	// cancel even after compilation succeeds.
-	if userCancelled {
-		return artifacts, types.OutcomeCanceled, errors.New("job canceled by user")
+	userCancelled = r.CanceledByUser()
+	if userCancelled && errors.Is(r.ctx.Err(), context.Canceled) {
+		return artifacts, types.OutcomeCanceled, ErrUserCancelled
 	}
 
 	if errors.Is(r.ctx.Err(), context.DeadlineExceeded) {
-		return artifacts, types.OutcomeTimeout,
-			fmt.Errorf("job timed out after %ds", r.Job.Timeout)
+		return artifacts, types.OutcomeTimeout, ErrJobTimeout
 	}
 
 	if execErr != nil {
@@ -150,39 +133,6 @@ func (r *JobRun) Execute() (jobsession.JobArtifacts, types.Outcome, error) {
 	}
 
 	return artifacts, types.OutcomeSuccess, nil
-}
-
-func (r *JobRun) ExecuteCommandOnAllUnits(cmd string) error {
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(r.AllUnits))
-
-	for _, unit := range r.AllUnits {
-		wg.Go(func() {
-			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
-			fmt.Fprintf(logWriter, "Executing command: %s\n", cmd)
-
-			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
-				Cmd:          cmd,
-				OutputWriter: logWriter,
-			})
-			if err != nil {
-				errCh <- fmt.Errorf("command execution failed on worker %s: %w", unit.Worker.ID()[:12], err)
-
-				// Fail Fast: If one node crashes, cancel the others to save resources
-				r.cancel()
-			}
-		})
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	for err := range errCh {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (r *JobRun) compileAll() (bool, string, error) {
@@ -199,7 +149,7 @@ func (r *JobRun) compileAll() (bool, string, error) {
 		}
 
 		wg.Go(func() {
-			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
+			logWriter := r.SessionLogger.NewLogWriter(unit.Worker.Alias())
 			fmt.Fprintf(logWriter, "Running build: %s\n", unit.Spec.BuildCommand)
 
 			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
@@ -232,7 +182,7 @@ func (r *JobRun) executeAll() error {
 
 	for _, unit := range r.AllUnits {
 		wg.Go(func() {
-			logWriter := r.Session.NewLogWriter(unit.Worker.Alias())
+			logWriter := r.SessionLogger.NewLogWriter(unit.Worker.Alias())
 			fmt.Fprintf(logWriter, "Executing: %s\n", unit.Spec.EntryCommand)
 
 			err := unit.Worker.ExecuteCommand(r.ctx, ExecuteCommandOptions{
@@ -260,7 +210,7 @@ func (r *JobRun) executeAll() error {
 	return nil
 }
 
-func (r *JobRun) collectArtifacts() jobsession.JobArtifacts {
+func (r *JobRun) collectArtifacts() js.JobArtifacts {
 	var results []dt.TestResult
 	var logs []t.TraceEvent
 	var logsMu sync.Mutex
@@ -307,7 +257,7 @@ func (r *JobRun) collectArtifacts() jobsession.JobArtifacts {
 
 	wg.Wait()
 
-	return jobsession.JobArtifacts{
+	return js.JobArtifacts{
 		TestResults:     results,
 		NodeMessageLogs: logs,
 	}

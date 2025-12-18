@@ -9,15 +9,20 @@ import (
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/jackc/pgx/v5"
 
-	// Add the import for the LogEntry definition
 	t "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
-	"github.com/google/uuid"
 )
 
-// Update Interface signature to accept nodeMessageLogs
 type JobStore interface {
-	SaveResult(ctx context.Context, jobID uuid.UUID, outcome types.Outcome, testResults []dt.TestResult, logs []types.LogEvent, nodeMessageLogs []t.TraceEvent, startTime, queued_at time.Time) error
+	SaveResult(
+		ctx context.Context,
+		outcome types.Outcome,
+		testResults []dt.TestResult,
+		logs []types.LogEvent,
+		nodeMessageLogs []t.TraceEvent,
+		startTime time.Time,
+		job types.Job,
+	) error
 }
 
 type JobRepository struct {
@@ -32,13 +37,12 @@ func NewJobRepository(pool Repository) *JobRepository {
 
 func (jr *JobRepository) SaveResult(
 	ctx context.Context,
-	jobID uuid.UUID,
 	outcome types.Outcome,
 	testResults []dt.TestResult,
 	logs []types.LogEvent,
 	nodeMessageLogs []t.TraceEvent,
 	startTime time.Time,
-	queued_at time.Time,
+	job types.Job,
 ) error {
 	if testResults == nil {
 		testResults = []dt.TestResult{}
@@ -67,33 +71,41 @@ func (jr *JobRepository) SaveResult(
 	defer tx.Rollback(ctx)
 
 	updateQuery := `
-		UPDATE job_results 
-		SET outcome = $1, 
-			test_results = $2,  
-			duration = $3,
-			logs = $4,
-			finished_at = NOW(),
-			queued_at = $5
-		WHERE job_uid = $6`
+		INSERT INTO job_results
+		(
+			outcome,
+			test_results,
+			duration,
+			logs,
+			finished_at,
+			queued_at,
+			job_uid,
+			user_id,
+			problem_id
+		)
+		VALUES($1, $2, $3, $4, NOW(), $5, $6, $7, $8)
+	`
 
 	_, err = tx.Exec(ctx, updateQuery,
 		string(outcomeJSON),
 		string(resultsJSON),
 		duration,
 		string(logsJSON),
-		queued_at,
-		jobID,
+		job.SubmittedAt,
+		job.JobUID,
+		job.UserID,
+		job.ProblemID,
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to update job_results: %w", err)
 	}
 
 	if len(nodeMessageLogs) > 0 {
 		insertQuery := `
-			INSERT INTO job_process_messages 
+			INSERT INTO job_process_messages
 			(job_uid, timestamp, "from", "to", event_type, message_type, vector_clock, payload, message_id, event_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		`
 
 		for _, msg := range nodeMessageLogs {
 			vcJSON, err := json.Marshal(msg.VectorClock)
@@ -102,7 +114,7 @@ func (jr *JobRepository) SaveResult(
 			}
 
 			_, err = tx.Exec(ctx, insertQuery,
-				jobID,
+				job.JobUID,
 				msg.Timestamp,
 				msg.From,
 				msg.To,

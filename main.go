@@ -24,9 +24,9 @@ func main() {
 	// Load .env file
 	_ = godotenv.Load()
 
-	log.Init(l.TraceLevel, true)
+	log.Init(l.DebugLevel, true)
 	// Parse command line flags
-	workerImageName, numWorkers, jobsCapacity := setup.ParseFlags()
+	workerImageName, numWorkers := setup.ParseFlags()
 	log.Logger.WithFields(l.Fields{
 		"worker_image": workerImageName,
 		"num_workers":  numWorkers,
@@ -40,9 +40,9 @@ func main() {
 	defer appResources.Cancel()
 	defer appResources.DockerCli.Close()
 
-	jobsCh := make(chan types.Job, jobsCapacity)
-	resultsCh := make(chan types.StreamingJobEvent, jobsCapacity)
-	cancelJobCh := make(chan types.CancelJobRequest, jobsCapacity)
+	jobsCh := make(chan types.Job)
+	resultsCh := make(chan types.StreamingJobEvent, 10_000)
+	cancelJobCh := make(chan types.CancelJobRequest, 10)
 
 	defer close(resultsCh)
 
