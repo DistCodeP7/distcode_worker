@@ -30,8 +30,6 @@ func NewCancellationTracker(retention, gcInterval time.Duration) *CancellationTr
 func (ct *CancellationTracker) Track(jobID uuid.UUID) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-
-	// Set expiration time in the future
 	ct.pending[jobID.String()] = ct.clock.Now().Add(ct.retention)
 }
 
