@@ -35,7 +35,7 @@ type ContainerController interface {
 }
 
 type CommandExecutor interface {
-	ContainerExecCreate(ctx context.Context, container string, config container.ExecOptions) (types.IDResponse, error)
+	ContainerExecCreate(ctx context.Context, container string, config container.ExecOptions) (container.ExecCreateResponse, error)
 	ContainerExecAttach(ctx context.Context, execID string, config container.ExecStartOptions) (types.HijackedResponse, error)
 	ContainerExecStart(ctx context.Context, execID string, config container.ExecStartOptions) error
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
@@ -72,7 +72,6 @@ type Client interface {
 	Close() error
 }
 
-// --- Implementation ---
 type DockerClient struct {
 	*client.Client
 }
@@ -87,11 +86,6 @@ func NewClientFromEnv() (*DockerClient, error) {
 	}
 	// Initialize the embedded field
 	return &DockerClient{Client: cli}, nil
-}
-
-// NewClient wraps an existing raw docker client.
-func NewClient(cli *client.Client) *DockerClient {
-	return &DockerClient{Client: cli}
 }
 
 func (d *DockerClient) CleanupWorkers(ctx context.Context) ([]string, error) {
