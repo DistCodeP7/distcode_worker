@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -129,7 +130,7 @@ func (d *JobDispatcher) waitForSlots(ctx context.Context, job types.Job, count i
 
 		case err := <-errCh:
 			if err != nil {
-				if err == context.Canceled {
+				if errors.Is(err, context.Canceled) {
 					d.failCancelledJob(job, "cancelled during reservation")
 				} else if _, ok := err.(*ErrorReserveTooManyWorkers); ok {
 					log.Logger.Warnf("Job %s requests too many workers: %v", job.JobUID.String(), err)

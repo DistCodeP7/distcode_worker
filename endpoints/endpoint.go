@@ -3,6 +3,7 @@ package endpoints
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -60,7 +61,7 @@ func (s *HTTPServer) Run(ctx context.Context) {
 	go func() {
 		log.Printf("Serving metrics at http://%s/metrics", s.addr)
 		log.Printf("Serving health at http://%s/health", s.addr)
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()

@@ -17,7 +17,7 @@ func TestJobRun_CanceledByUser_DefaultFalse(t *testing.T) {
 	}
 	session := &jobsession.JobSessionLogger{}
 	testUnit := WorkUnit{}
-	subUnits := []WorkUnit{}
+	var subUnits []WorkUnit
 
 	jr := NewJobRun(context.Background(), job, testUnit, subUnits, session)
 
@@ -33,7 +33,7 @@ func TestJobRun_CanceledByUser_SetTrue(t *testing.T) {
 	}
 	session := &jobsession.JobSessionLogger{}
 	testUnit := WorkUnit{}
-	subUnits := []WorkUnit{}
+	var subUnits []WorkUnit
 
 	jr := NewJobRun(context.Background(), job, testUnit, subUnits, session)
 
@@ -50,7 +50,7 @@ func TestJobRun_CanceledByUser_SetFalse(t *testing.T) {
 	}
 	session := &jobsession.JobSessionLogger{}
 	testUnit := WorkUnit{}
-	subUnits := []WorkUnit{}
+	var subUnits []WorkUnit
 
 	jr := NewJobRun(context.Background(), job, testUnit, subUnits, session)
 

@@ -86,7 +86,7 @@ func ConvertToJobRequest(req *types.JobRequest) (*types.Job, error) {
 		),
 	}
 
-	nodes := []types.NodeSpec{}
+	var nodes []types.NodeSpec
 
 	// Submission Replicas
 	for _, replica := range req.Nodes.Submission.ReplicaConfigs {

@@ -46,7 +46,7 @@ func NewJobSession(job types.Job, out chan<- types.StreamingJobEvent) *JobSessio
 
 func (s *JobSessionLogger) trackPhaseTime(newPhase types.Phase) {
 	now := time.Now()
-	s.timeSpent[s.phase] += now.Sub(s.clock)
+	s.timeSpent[s.phase] += now.Sub(s.clock.Add(1 * time.Millisecond))
 	s.clock = now
 	s.phase = newPhase
 }

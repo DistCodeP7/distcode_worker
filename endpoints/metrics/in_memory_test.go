@@ -18,10 +18,10 @@ func TestTrackTimeSpent_NewPhases(t *testing.T) {
 
 	mc.TrackTimeSpent(phases)
 
-	if got := mc.TimeSpentInPhases[types.Phase("compile")]; got != 2*time.Second {
+	if got := mc.TimeSpentInPhases[("compile")]; got != 2*time.Second {
 		t.Errorf("expected compile phase to be 2s, got %v", got)
 	}
-	if got := mc.TimeSpentInPhases[types.Phase("run")]; got != 3*time.Second {
+	if got := mc.TimeSpentInPhases[("run")]; got != 3*time.Second {
 		t.Errorf("expected run phase to be 3s, got %v", got)
 	}
 }
@@ -30,13 +30,13 @@ func TestTrackTimeSpent_Accumulates(t *testing.T) {
 	mc := NewInMemoryMetricsCollector()
 
 	mc.TrackTimeSpent(map[types.Phase]time.Duration{
-		types.Phase("compile"): 1 * time.Second,
+		"compile": 1 * time.Second,
 	})
 	mc.TrackTimeSpent(map[types.Phase]time.Duration{
-		types.Phase("compile"): 4 * time.Second,
+		"compile": 4 * time.Second,
 	})
 
-	if got := mc.TimeSpentInPhases[types.Phase("compile")]; got != 5*time.Second {
+	if got := mc.TimeSpentInPhases[("compile")]; got != 5*time.Second {
 		t.Errorf("expected compile phase to accumulate to 5s, got %v", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestIncJobOutcome_Timeout(t *testing.T) {
 func TestIncJobOutcome_UnknownOutcome(t *testing.T) {
 	mc := NewInMemoryMetricsCollector()
 	// Use an outcome not covered by the switch
-	mc.IncJobOutcome(types.Outcome("unknown"))
+	mc.IncJobOutcome("unknown")
 	if mc.JobSuccess != 0 || mc.JobFailure != 0 || mc.JobCanceled != 0 || mc.JobTimeout != 0 {
 		t.Errorf("no counters should be incremented for unknown outcome")
 	}
@@ -225,8 +225,8 @@ func TestJSON_WithData(t *testing.T) {
 	mc.JobTotal = 5
 	mc.CurrentJobs = 1
 	mc.TotalDuration = 10 * time.Second
-	mc.TimeSpentInPhases[types.Phase("compile")] = 3 * time.Second
-	mc.TimeSpentInPhases[types.Phase("run")] = 7 * time.Second
+	mc.TimeSpentInPhases[("compile")] = 3 * time.Second
+	mc.TimeSpentInPhases[("run")] = 7 * time.Second
 
 	jsonBytes := mc.JSON()
 

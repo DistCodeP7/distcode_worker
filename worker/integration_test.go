@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,8 +21,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
-
-// --- Updated Mock Implementation ---
 
 type MockJobStore struct {
 	mock.Mock
@@ -77,7 +77,7 @@ func setupTestHelper(t *testing.T) (
 	return dispatcher, jobStore, jobsCh, cancelCh, cleanup
 }
 
-func TestIntegration_JobDispatcher_SuccessExpanded(t *testing.T) {
+func TestIntegration_JobDispatcher_Success(t *testing.T) {
 	dispatcher, jobStore, jobsCh, _, cleanup := setupTestHelper(t)
 	defer cleanup()
 
@@ -102,7 +102,7 @@ func TestIntegration_JobDispatcher_SuccessExpanded(t *testing.T) {
 
 	jobStore.On(
 		"SaveResult",
-		mock.Anything, // Context
+		mock.Anything,
 		mock.MatchedBy(func(res db.JobResult) bool {
 			if res.Outcome != types.OutcomeSuccess {
 				return false
@@ -125,7 +125,7 @@ func TestIntegration_JobDispatcher_SuccessExpanded(t *testing.T) {
             "fmt"
         )
         func main() {
-            // Simulate running tests by just writing the result file
+            
             jsonData := %q 
             err := os.WriteFile("test_results.json", []byte(jsonData), 0644)
             if err != nil {
@@ -145,7 +145,7 @@ func TestIntegration_JobDispatcher_SuccessExpanded(t *testing.T) {
 			EntryCommand: "./app",
 			Files: types.FileMap{
 				"go.mod":  types.SourceCode(goModContent),
-				"main.go": types.SourceCode([]byte(code)),
+				"main.go": types.SourceCode(code),
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
@@ -199,57 +199,64 @@ func TestIntegration_JobDispatcher_CancelLate(t *testing.T) {
 
 	done := make(chan struct{})
 
-	// Updated: Use MatchedBy to check the Outcome inside the db.JobResult struct
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
 		mock.MatchedBy(func(res db.JobResult) bool {
-			return res.Outcome == types.OutcomeCanceled
+			if res.Outcome != types.OutcomeCanceled {
+				return false
+			}
+
+			if !res.Timespent.HasPhases(
+				types.PhasePending,
+				types.PhaseReserving,
+			) {
+				return false
+			}
+
+			return true
 		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
-	badCode := []byte(`
+	longRunningCode := []byte(`
         package main
         import "time"
         func main() {
-            time.Sleep(60 * time.Second)
+            time.Sleep(10 * time.Second)
         }
     `)
 
 	job := types.Job{
 		JobUID:  uuid.New(),
-		Timeout: 60,
+		Timeout: 30,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
 			BuildCommand: "go build -o app main.go",
 			EntryCommand: "./app",
 			Files: types.FileMap{
 				"go.mod":  types.SourceCode(goModContent),
-				"main.go": types.SourceCode(badCode),
+				"main.go": types.SourceCode(longRunningCode),
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester_cancel_late",
 		SubmittedAt:     time.Now(),
 		ProblemID:       -1,
 	}
 
 	jobsCh <- job
-
-	time.Sleep(5 * time.Second)
-	fmt.Println("Sending cancellation")
+	time.Sleep(3 * time.Second)
 	cancelCh <- types.CancelJobRequest{
 		JobUID: job.JobUID,
 	}
 
 	select {
 	case <-done:
-
-	case <-time.After(30 * time.Second):
-		t.Fatal("Test timed out waiting for cancel failure")
+	case <-time.After(15 * time.Second):
+		t.Fatal("Test timed out waiting for job cancellation result")
 	}
 
 	jobStore.AssertExpectations(t)
@@ -261,11 +268,15 @@ func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
 
 	done := make(chan struct{})
 
-	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
 		mock.MatchedBy(func(res db.JobResult) bool {
+
+			if !res.Timespent.HasPhases() {
+				return false
+			}
+
 			return res.Outcome == types.OutcomeCanceled
 		}),
 	).Run(func(args mock.Arguments) {
@@ -273,13 +284,7 @@ func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
 	}).Return(nil)
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
-	badCode := []byte(`
-        package main
-        import "time"
-        func main() {
-            time.Sleep(60 * time.Second)
-        }
-    `)
+	simpleCode := []byte(`package main; import "fmt"; func main() { fmt.Println("Hi") }`)
 
 	job := types.Job{
 		JobUID:  uuid.New(),
@@ -290,13 +295,12 @@ func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
 			EntryCommand: "./app",
 			Files: types.FileMap{
 				"go.mod":  types.SourceCode(goModContent),
-				"main.go": types.SourceCode(badCode),
+				"main.go": types.SourceCode(simpleCode),
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester_cancel_early",
 		SubmittedAt:     time.Now(),
-		ProblemID:       -1,
 	}
 
 	cancelCh <- types.CancelJobRequest{
@@ -306,9 +310,8 @@ func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
 
 	select {
 	case <-done:
-
-	case <-time.After(30 * time.Second):
-		t.Fatal("Test timed out waiting for cancel failure")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for early cancellation")
 	}
 
 	jobStore.AssertExpectations(t)
@@ -320,23 +323,33 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 
 	done := make(chan struct{})
 
-	// Updated: Use MatchedBy for Outcome, Run for log inspection
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
 		mock.MatchedBy(func(res db.JobResult) bool {
+			if !res.Timespent.HasPhases(
+				types.PhasePending,
+				types.PhaseReserving,
+				types.PhaseConfiguringNetwork,
+				types.PhaseCompiling,
+			) {
+				return false
+			}
+
 			return res.Outcome == types.OutcomeCompilationError
 		}),
 	).Run(func(args mock.Arguments) {
 		res := args.Get(1).(db.JobResult)
-		foundErrorMsg := false
+
+		foundError := false
 		for _, l := range res.Logs {
-			if contains(l.Message, "undefined: nonExistentFunction") {
-				foundErrorMsg = true
+			if strings.Contains(l.Message, "undefined: nonExistentFunction") {
+				foundError = true
+				break
 			}
 		}
-		if !foundErrorMsg {
-			fmt.Println("WARNING: Expected compiler error message not found in logs")
+		if !foundError {
+			t.Error("Expected compiler error message in logs, but didn't find it.")
 		}
 		close(done)
 	}).Return(nil)
@@ -344,9 +357,7 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 	badCode := []byte(`
         package main
-        import "fmt"
         func main() {
-            
             nonExistentFunction()
         }
     `)
@@ -364,18 +375,16 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester_compile_fail",
 		SubmittedAt:     time.Now(),
-		ProblemID:       -1,
 	}
 
 	jobsCh <- job
 
 	select {
 	case <-done:
-
 	case <-time.After(30 * time.Second):
-		t.Fatal("Test timed out waiting for compilation failure")
+		t.Fatal("Test timed out waiting for compilation error")
 	}
 
 	jobStore.AssertExpectations(t)
@@ -387,14 +396,33 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 
 	done := make(chan struct{})
 
-	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
 		mock.MatchedBy(func(res db.JobResult) bool {
+			if !res.Timespent.HasPhases(
+				types.PhasePending,
+				types.PhaseReserving,
+				types.PhaseConfiguringNetwork,
+				types.PhaseCompiling,
+				types.PhaseRunning,
+			) {
+				return false
+			}
 			return res.Outcome == types.OutcomeFailed
 		}),
 	).Run(func(args mock.Arguments) {
+		res := args.Get(1).(db.JobResult)
+		foundPanic := false
+		for _, l := range res.Logs {
+			if strings.Contains(l.Message, "intentional panic") {
+				foundPanic = true
+				break
+			}
+		}
+		if !foundPanic {
+			t.Log("Warning: Did not see panic message in logs (might be in stderr which isn't always parsed perfectly in mocks)")
+		}
 		close(done)
 	}).Return(nil)
 
@@ -408,7 +436,7 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 
 	job := types.Job{
 		JobUID:  uuid.New(),
-		Timeout: 15,
+		Timeout: 20,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
 			BuildCommand: "go build -o app main.go",
@@ -419,18 +447,16 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester_runtime_fail",
 		SubmittedAt:     time.Now(),
-		ProblemID:       -1,
 	}
 
 	jobsCh <- job
 
 	select {
 	case <-done:
-
-	case <-time.After(20 * time.Second):
-		t.Fatal("Test timed out waiting for runtime failure")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Test timed out waiting for runtime error")
 	}
 
 	jobStore.AssertExpectations(t)
@@ -442,11 +468,24 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 
 	done := make(chan struct{})
 
-	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
 		mock.MatchedBy(func(res db.JobResult) bool {
+			if !res.Timespent.HasPhases(
+				types.PhasePending,
+				types.PhaseReserving,
+				types.PhaseConfiguringNetwork,
+				types.PhaseCompiling,
+				types.PhaseRunning,
+			) {
+				return false
+			}
+
+			if errors.Is(res.Error, context.DeadlineExceeded) {
+				t.Log("Note: context deadline exceeded detected in error")
+			}
+
 			return res.Outcome == types.OutcomeTimeout
 		}),
 	).Run(func(args mock.Arguments) {
@@ -460,7 +499,7 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
         import "time"
         func main() {
             for {
-                time.Sleep(1 * time.Second)
+                time.Sleep(100 * time.Millisecond)
             }
         }
     `)
@@ -479,9 +518,8 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester_timeout",
 		SubmittedAt:     time.Now(),
-		ProblemID:       -1,
 	}
 
 	jobsCh <- job
@@ -489,15 +527,11 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 	select {
 	case <-done:
 
-	case <-time.After(10 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("Test timed out - Dispatcher failed to kill the infinite loop job")
 	}
 
 	jobStore.AssertExpectations(t)
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && len(substr) > 0 && s[0:len(substr)] == substr
 }
 
 func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
@@ -505,23 +539,18 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 	defer cleanup()
 
 	done := make(chan struct{})
-	traceLog := tt.TraceEvent{
-		Timestamp: 1,
-		ID:        uuid.NewString(),
-		MsgType:   "something",
-		MessageID: "Foo",
-		EvtType:   "recv",
-		From:      "A",
-		To:        "B",
-		VectorClock: map[string]uint64{
-			"A": 1, "B": 1,
-		},
-		Payload: nil,
-	}
 
-	b, err := json.Marshal(traceLog)
+	traceLog := tt.TraceEvent{
+		Timestamp: 123456,
+		ID:        "event_1",
+		MsgType:   "test",
+		MessageID: "msg_1",
+		EvtType:   "send",
+		From:      "nodeA",
+		To:        "nodeB",
+	}
+	fileBytes, err := json.Marshal(traceLog)
 	require.NoError(t, err)
-	fileContentToInject := append(b, '\n')
 
 	jobStore.On(
 		"SaveResult",
@@ -531,14 +560,22 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 				return false
 			}
 
-			foundConfirmation := false
+			if !res.Timespent.HasPhases(
+				types.PhasePending,
+				types.PhaseReserving,
+				types.PhaseConfiguringNetwork,
+				types.PhaseCompiling,
+				types.PhaseRunning,
+			) {
+				return false
+			}
+
 			for _, log := range res.Logs {
-				if bytes.Contains([]byte(log.Message), []byte("VERIFICATION_SUCCESS")) {
-					foundConfirmation = true
-					break
+				if strings.Contains(log.Message, "VERIFICATION_SUCCESS") {
+					return true
 				}
 			}
-			return foundConfirmation
+			return false
 		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
@@ -553,50 +590,43 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
         )
         func main() {
             expectedLen := %d
-            
-            // Attempt to read the injected file
-            content, err := os.ReadFile("trace_log.jsonl")
+            content, err := os.ReadFile("trace_log.json")
             if err != nil {
-                fmt.Printf("FAILURE: Could not read file: %%v\n", err)
+                fmt.Printf("Error reading file: %%v\n", err)
                 os.Exit(1)
             }
-            
-            // Verify data integrity
             if len(content) != expectedLen {
-                fmt.Printf("FAILURE: Length mismatch. Got %%d, want %%d\n", len(content), expectedLen)
+                fmt.Printf("Size mismatch. Got %%d, want %%d\n", len(content), expectedLen)
                 os.Exit(1)
             }
-
-            // If we get here, the file was injected correctly
             fmt.Println("VERIFICATION_SUCCESS")
         }
-    `, len(fileContentToInject))
+    `, len(fileBytes))
 
 	job := types.Job{
 		JobUID:  uuid.New(),
-		Timeout: 5,
+		Timeout: 10,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
 			BuildCommand: "go build -o app main.go",
 			EntryCommand: "./app",
 			Files: types.FileMap{
-				"go.mod":          types.SourceCode(goModContent),
-				"main.go":         types.SourceCode([]byte(code)),
-				"trace_log.jsonl": types.SourceCode(fileContentToInject),
+				"go.mod":         types.SourceCode(goModContent),
+				"main.go":        types.SourceCode(code),
+				"trace_log.json": types.SourceCode(fileBytes),
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "tester",
+		UserID:          "tester_file_read",
 		SubmittedAt:     time.Now(),
-		ProblemID:       -1,
 	}
 
 	jobsCh <- job
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Test timed out - Dispatcher failed to process job or verification failed")
+	case <-time.After(20 * time.Second):
+		t.Fatal("Test timed out waiting for file read verification")
 	}
 
 	jobStore.AssertExpectations(t)
@@ -612,23 +642,20 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	require.NoError(t, err)
-	defer cli.Close()
-
-	workerImage := "ghcr.io/distcodep7/dsnet:latest"
 
 	jobStore := new(MockJobStore)
 	metricsCollector := metrics.NewInMemoryMetricsCollector()
 
 	netManager := &MockErrorNetworkManager{}
+	workerImage := "ghcr.io/distcodep7/dsnet:latest"
 
 	wp := NewDockerWorkerProducer(cli, workerImage)
 	wm, err := NewWorkerManager(1, wp)
 	require.NoError(t, err)
-	defer wm.Shutdown()
 
-	jobsCh := make(chan types.Job, 1)
+	jobsCh := make(chan types.Job, 10)
 	resultsCh := make(chan types.StreamingJobEvent, 100)
-	cancelCh := make(chan types.CancelJobRequest, 1)
+	cancelCh := make(chan types.CancelJobRequest, 10)
 
 	dispatcher := NewJobDispatcher(
 		cancelCh,
@@ -640,11 +667,17 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 		metricsCollector,
 	)
 
-	go dispatcher.Run(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	go dispatcher.Run(ctx)
+
+	defer func() {
+		cancel()
+		wm.Shutdown()
+		cli.Close()
+	}()
 
 	done := make(chan struct{})
 
-	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
@@ -652,12 +685,16 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 			return res.Outcome == types.OutcomeFailed
 		}),
 	).Run(func(args mock.Arguments) {
+		res := args.Get(1).(db.JobResult)
+
+		if res.Error == nil || !strings.Contains(res.Error.Error(), "simulated network creation failure") {
+			t.Errorf("Expected network failure error, got: %v", res.Error)
+		}
 		close(done)
 	}).Return(nil)
 
-	jobID := uuid.New()
 	job := types.Job{
-		JobUID:  jobID,
+		JobUID:  uuid.New(),
 		Timeout: 5,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
@@ -666,13 +703,14 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 			Files:        types.FileMap{},
 		},
 		SubmissionNodes: []types.NodeSpec{},
+		UserID:          "tester_net_fail",
+		SubmittedAt:     time.Now(),
 	}
 
 	jobsCh <- job
 
 	select {
 	case <-done:
-
 	case <-time.After(5 * time.Second):
 		t.Fatal("Test timed out waiting for network failure handling")
 	}

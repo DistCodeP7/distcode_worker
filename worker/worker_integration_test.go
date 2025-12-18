@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -140,7 +141,7 @@ func TestWorker_ExecuteCommand_Timeout(t *testing.T) {
 		t.Fatal("Expected error due to context timeout, got nil")
 	}
 
-	if ctx.Err() != context.DeadlineExceeded {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Errorf("Expected context deadline exceeded, got: %v", ctx.Err())
 	}
 }

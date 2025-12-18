@@ -45,7 +45,7 @@ func NewJobRun(
 	sUnits []WorkUnit,
 	session *js.JobSessionLogger,
 ) *JobRun {
-	jobCtx, cancel := context.WithTimeout(parentCtx, time.Duration(job.Timeout)*time.Second)
+	jobCtx, cancel := context.WithTimeout(parentCtx, job.Timeout*time.Second)
 	allUnits := make([]WorkUnit, 0, 1+len(sUnits))
 	allUnits = append(allUnits, tUnit)
 	allUnits = append(allUnits, sUnits...)
