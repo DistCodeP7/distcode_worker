@@ -96,6 +96,19 @@ func NewClientFromEnv(version ...string) (*DockerClient, error) {
 	return &DockerClient{Client: cli}, nil
 }
 
+func (d *DockerClient) ListWorkers(ctx context.Context) ([]container.Summary, error) {
+	listFilters := filters.NewArgs()
+	listFilters.Add("label", "managed_by=distcode_worker")
+	containers, err := d.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: listFilters,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+	return containers, nil
+}
+
 func (d *DockerClient) CleanupWorkers(ctx context.Context) ([]string, error) {
 	listFilters := filters.NewArgs()
 	listFilters.Add("label", "managed_by=distcode_worker")

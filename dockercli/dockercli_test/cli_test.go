@@ -3,6 +3,7 @@ package dockercli_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/DistCodeP7/distcode_worker/dockercli"
 	"github.com/DistCodeP7/distcode_worker/types"
@@ -38,6 +39,9 @@ func TestCleanupWorkers(t *testing.T) {
 			{Name: "nofile", Soft: 1024, Hard: 1024},
 		},
 	})
+	containers, _ := cli.ListWorkers(context.Background())
+	t.Logf("Workers before cleanup: %v", containers)
+	time.Sleep(500 * time.Millisecond)
 	removedIDs, err := cli.CleanupWorkers(context.Background())
 
 	if err != nil {
