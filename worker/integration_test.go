@@ -1,18 +1,17 @@
-//go:build integration
-// +build integration
-
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/db"
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
+	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/types"
-	"github.com/DistCodeP7/distcode_worker/utils"
 	tt "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 	"github.com/docker/docker/client"
@@ -21,21 +20,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// --- Updated Mock Implementation ---
+
 type MockJobStore struct {
 	mock.Mock
 }
 
-func (m *MockJobStore) SaveResult(
-	ctx context.Context,
-	outcome types.Outcome,
-	testResults []dt.TestResult,
-	logs []types.LogEvent,
-	nodeMessageLogs []tt.TraceEvent,
-	startTime time.Time,
-	job types.Job,
-	timeSpent utils.TimeSpentPayload,
-) error {
-	args := m.Called(ctx, outcome, testResults, logs, nodeMessageLogs, startTime, job, timeSpent)
+func (m *MockJobStore) SaveResult(ctx context.Context, results db.JobResult) error {
+	args := m.Called(ctx, results)
 	return args.Error(0)
 }
 
@@ -52,7 +44,7 @@ func setupTestHelper(t *testing.T) (
 	workerImage := "ghcr.io/distcodep7/dsnet:latest"
 
 	jobStore := new(MockJobStore)
-	metrics := metrics.NewInMemoryMetricsCollector()
+	metricsCollector := metrics.NewInMemoryMetricsCollector()
 	netManager := NewDockerNetworkManager(cli)
 	wp := NewDockerWorkerProducer(cli, workerImage)
 
@@ -70,7 +62,7 @@ func setupTestHelper(t *testing.T) (
 		wm,
 		netManager,
 		jobStore,
-		metrics,
+		metricsCollector,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -85,34 +77,64 @@ func setupTestHelper(t *testing.T) (
 	return dispatcher, jobStore, jobsCh, cancelCh, cleanup
 }
 
-func TestIntegration_JobDispatcher_Success(t *testing.T) {
-	_, jobStore, jobsCh, _, cleanup := setupTestHelper(t)
+func TestIntegration_JobDispatcher_SuccessExpanded(t *testing.T) {
+	dispatcher, jobStore, jobsCh, _, cleanup := setupTestHelper(t)
 	defer cleanup()
+
+	_ = dispatcher
 
 	done := make(chan struct{})
 
+	var savedOutcome types.Outcome
+	var savedArtifacts jobsession.JobArtifacts
+	var savedLogs []types.LogEvent
+
+	expectedResults := []dt.TestResult{
+		{
+			Name:       "TestSimpleConnection",
+			Type:       dt.TypeSuccess,
+			DurationMs: 20,
+			Message:    "Whatever",
+		},
+	}
+	resultBytes, err := json.Marshal(expectedResults)
+	require.NoError(t, err)
+
 	jobStore.On(
 		"SaveResult",
-		mock.Anything,
-		types.OutcomeSuccess,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.Anything, // Context
+		mock.MatchedBy(func(res db.JobResult) bool {
+			if res.Outcome != types.OutcomeSuccess {
+				return false
+			}
+			return true
+		}),
 	).Run(func(args mock.Arguments) {
+		res := args.Get(1).(db.JobResult)
+		savedOutcome = res.Outcome
+		savedArtifacts = res.Artifacts
+		savedLogs = res.Logs
 		close(done)
 	}).Return(nil)
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
-	badCode := []byte(`
-		package main
-		import "fmt"
-		func main() {
-			fmt.Println("Hello, World!")
-		}
-	`)
+	code := fmt.Sprintf(`
+        package main
+        import (
+            "os"
+            "fmt"
+        )
+        func main() {
+            // Simulate running tests by just writing the result file
+            jsonData := %q 
+            err := os.WriteFile("test_results.json", []byte(jsonData), 0644)
+            if err != nil {
+                fmt.Printf("Error writing results: %%v\n", err)
+                os.Exit(1)
+            }
+            fmt.Println("Tests finished successfully")
+        }
+    `, string(resultBytes))
 
 	job := types.Job{
 		JobUID:  uuid.New(),
@@ -123,11 +145,11 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 			EntryCommand: "./app",
 			Files: types.FileMap{
 				"go.mod":  types.SourceCode(goModContent),
-				"main.go": types.SourceCode(badCode),
+				"main.go": types.SourceCode([]byte(code)),
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester",
 		SubmittedAt:     time.Now(),
 		ProblemID:       -1,
 	}
@@ -136,12 +158,39 @@ func TestIntegration_JobDispatcher_Success(t *testing.T) {
 
 	select {
 	case <-done:
-
 	case <-time.After(30 * time.Second):
-		t.Fatal("Test timed out waiting for compilation failure")
+		t.Fatal("Test timed out waiting for job to finish")
 	}
 
 	jobStore.AssertExpectations(t)
+	if savedOutcome != types.OutcomeSuccess {
+		t.Errorf("Expected job outcome %v, got %v", types.OutcomeSuccess, savedOutcome)
+	}
+
+	if len(savedArtifacts.TestResults) != 1 {
+		t.Errorf("Expected 1 test result, got %d", len(savedArtifacts.TestResults))
+	} else {
+		if savedArtifacts.TestResults[0].Name != "TestSimpleConnection" {
+			t.Errorf("Expected test name 'TestSimpleConnection', got %s", savedArtifacts.TestResults[0].Name)
+		}
+	}
+
+	foundCompile := false
+	foundRun := false
+	for _, logEntry := range savedLogs {
+		if bytes.Contains([]byte(logEntry.Message), []byte("Running build")) {
+			foundCompile = true
+		}
+		if bytes.Contains([]byte(logEntry.Message), []byte("Executing")) {
+			foundRun = true
+		}
+	}
+	if !foundCompile {
+		t.Error("Expected compile phase logs")
+	}
+	if !foundRun {
+		t.Error("Expected execution phase logs")
+	}
 }
 
 func TestIntegration_JobDispatcher_CancelLate(t *testing.T) {
@@ -150,28 +199,25 @@ func TestIntegration_JobDispatcher_CancelLate(t *testing.T) {
 
 	done := make(chan struct{})
 
+	// Updated: Use MatchedBy to check the Outcome inside the db.JobResult struct
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
-		types.OutcomeCanceled,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			return res.Outcome == types.OutcomeCanceled
+		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 	badCode := []byte(`
-		package main
-		import "time"
-		func main() {
-			time.Sleep(60 * time.Second)
-		}
-	`)
+        package main
+        import "time"
+        func main() {
+            time.Sleep(60 * time.Second)
+        }
+    `)
 
 	job := types.Job{
 		JobUID:  uuid.New(),
@@ -215,28 +261,25 @@ func TestIntegration_JobDispatcher_CancelEarly(t *testing.T) {
 
 	done := make(chan struct{})
 
+	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
-		types.OutcomeCanceled,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			return res.Outcome == types.OutcomeCanceled
+		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 	badCode := []byte(`
-		package main
-		import "time"
-		func main() {
-			time.Sleep(60 * time.Second)
-		}
-	`)
+        package main
+        import "time"
+        func main() {
+            time.Sleep(60 * time.Second)
+        }
+    `)
 
 	job := types.Job{
 		JobUID:  uuid.New(),
@@ -277,22 +320,17 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 
 	done := make(chan struct{})
 
+	// Updated: Use MatchedBy for Outcome, Run for log inspection
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
-		types.OutcomeCompilationError,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			return res.Outcome == types.OutcomeCompilationError
+		}),
 	).Run(func(args mock.Arguments) {
-
-		logs := args.Get(3).([]types.LogEvent)
+		res := args.Get(1).(db.JobResult)
 		foundErrorMsg := false
-		for _, l := range logs {
-
+		for _, l := range res.Logs {
 			if contains(l.Message, "undefined: nonExistentFunction") {
 				foundErrorMsg = true
 			}
@@ -305,13 +343,13 @@ func TestIntegration_JobDispatcher_CompilationError(t *testing.T) {
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 	badCode := []byte(`
-		package main
-		import "fmt"
-		func main() {
-			
-			nonExistentFunction()
-		}
-	`)
+        package main
+        import "fmt"
+        func main() {
+            
+            nonExistentFunction()
+        }
+    `)
 
 	job := types.Job{
 		JobUID:  uuid.New(),
@@ -349,27 +387,24 @@ func TestIntegration_JobDispatcher_RuntimeError(t *testing.T) {
 
 	done := make(chan struct{})
 
+	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
-		types.OutcomeFailed,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			return res.Outcome == types.OutcomeFailed
+		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
 
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 	panicCode := []byte(`
-		package main
-		func main() {
-			panic("intentional panic for testing")
-		}
-	`)
+        package main
+        func main() {
+            panic("intentional panic for testing")
+        }
+    `)
 
 	job := types.Job{
 		JobUID:  uuid.New(),
@@ -407,16 +442,13 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 
 	done := make(chan struct{})
 
+	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
-		types.OutcomeTimeout,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			return res.Outcome == types.OutcomeTimeout
+		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)
@@ -424,14 +456,14 @@ func TestIntegration_JobDispatcher_Timeout(t *testing.T) {
 	goModContent := []byte("module worker-test\ngo 1.20\n")
 
 	loopCode := []byte(`
-		package main
-		import "time"
-		func main() {
-			for {
-				time.Sleep(1 * time.Second)
-			}
-		}
-	`)
+        package main
+        import "time"
+        func main() {
+            for {
+                time.Sleep(1 * time.Second)
+            }
+        }
+    `)
 
 	job := types.Job{
 		JobUID: uuid.New(),
@@ -473,31 +505,7 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 	defer cleanup()
 
 	done := make(chan struct{})
-	jobStore.On(
-		"SaveResult",
-		mock.Anything,
-		types.OutcomeSuccess,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-	).Run(func(args mock.Arguments) {
-		close(done)
-	}).Return(nil)
-
-	goModContent := []byte("module worker-test\ngo 1.20\n")
-
-	fileContent := []byte(`
-		package main
-		import "fmt"
-		func main() {
-			fmt.Println("INTEGRATION TEST SUCCESS")
-		}
-	`)
-
-	trace_log := tt.TraceEvent{
+	traceLog := tt.TraceEvent{
 		Timestamp: 1,
 		ID:        uuid.NewString(),
 		MsgType:   "something",
@@ -511,24 +519,74 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 		Payload: nil,
 	}
 
-	b, err := json.Marshal(trace_log)
+	b, err := json.Marshal(traceLog)
 	require.NoError(t, err)
+	fileContentToInject := append(b, '\n')
+
+	jobStore.On(
+		"SaveResult",
+		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			if res.Outcome != types.OutcomeSuccess {
+				return false
+			}
+
+			foundConfirmation := false
+			for _, log := range res.Logs {
+				if bytes.Contains([]byte(log.Message), []byte("VERIFICATION_SUCCESS")) {
+					foundConfirmation = true
+					break
+				}
+			}
+			return foundConfirmation
+		}),
+	).Run(func(args mock.Arguments) {
+		close(done)
+	}).Return(nil)
+
+	goModContent := []byte("module worker-test\ngo 1.20\n")
+	code := fmt.Sprintf(`
+        package main
+        import (
+            "fmt"
+            "os"
+        )
+        func main() {
+            expectedLen := %d
+            
+            // Attempt to read the injected file
+            content, err := os.ReadFile("trace_log.jsonl")
+            if err != nil {
+                fmt.Printf("FAILURE: Could not read file: %%v\n", err)
+                os.Exit(1)
+            }
+            
+            // Verify data integrity
+            if len(content) != expectedLen {
+                fmt.Printf("FAILURE: Length mismatch. Got %%d, want %%d\n", len(content), expectedLen)
+                os.Exit(1)
+            }
+
+            // If we get here, the file was injected correctly
+            fmt.Println("VERIFICATION_SUCCESS")
+        }
+    `, len(fileContentToInject))
 
 	job := types.Job{
 		JobUID:  uuid.New(),
-		Timeout: 3,
+		Timeout: 5,
 		TestNode: types.NodeSpec{
 			Alias:        "main_node",
 			BuildCommand: "go build -o app main.go",
 			EntryCommand: "./app",
 			Files: types.FileMap{
 				"go.mod":          types.SourceCode(goModContent),
-				"main.go":         types.SourceCode(fileContent),
-				"trace_log.jsonl": types.SourceCode(append(b, '\n')),
+				"main.go":         types.SourceCode([]byte(code)),
+				"trace_log.jsonl": types.SourceCode(fileContentToInject),
 			},
 		},
 		SubmissionNodes: []types.NodeSpec{},
-		UserID:          "Something",
+		UserID:          "tester",
 		SubmittedAt:     time.Now(),
 		ProblemID:       -1,
 	}
@@ -537,9 +595,8 @@ func TestIntegration_JobDispatcher_ReadFromFile(t *testing.T) {
 
 	select {
 	case <-done:
-
 	case <-time.After(10 * time.Second):
-		t.Fatal("Test timed out - Dispatcher failed to kill the infinite loop job")
+		t.Fatal("Test timed out - Dispatcher failed to process job or verification failed")
 	}
 
 	jobStore.AssertExpectations(t)
@@ -560,7 +617,7 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 	workerImage := "ghcr.io/distcodep7/dsnet:latest"
 
 	jobStore := new(MockJobStore)
-	metrics := metrics.NewInMemoryMetricsCollector()
+	metricsCollector := metrics.NewInMemoryMetricsCollector()
 
 	netManager := &MockErrorNetworkManager{}
 
@@ -580,23 +637,20 @@ func TestIntegration_JobDispatcher_NetworkFailure(t *testing.T) {
 		wm,
 		netManager,
 		jobStore,
-		metrics,
+		metricsCollector,
 	)
 
-	go dispatcher.Run(t.Context())
+	go dispatcher.Run(context.Background())
 
 	done := make(chan struct{})
 
+	// Updated: Use MatchedBy
 	jobStore.On(
 		"SaveResult",
 		mock.Anything,
-		types.OutcomeFailed,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
+		mock.MatchedBy(func(res db.JobResult) bool {
+			return res.Outcome == types.OutcomeFailed
+		}),
 	).Run(func(args mock.Arguments) {
 		close(done)
 	}).Return(nil)

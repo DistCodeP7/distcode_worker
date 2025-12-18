@@ -7,24 +7,28 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/jackc/pgx/v5"
 
-	t "github.com/distcodep7/dsnet/testing"
 	dt "github.com/distcodep7/dsnet/testing/disttest"
 )
+
+type JobResult struct {
+	Job       types.Job
+	Logs      []types.LogEvent
+	Artifacts jobsession.JobArtifacts
+	Outcome   types.Outcome
+	Timespent utils.TimeSpentPayload
+	Duration  time.Duration
+	Error     error
+}
 
 type JobStore interface {
 	SaveResult(
 		ctx context.Context,
-		outcome types.Outcome,
-		testResults []dt.TestResult,
-		logs []types.LogEvent,
-		nodeMessageLogs []t.TraceEvent,
-		startTime time.Time,
-		job types.Job,
-		timeSpent utils.TimeSpentPayload,
+		results JobResult,
 	) error
 }
 
@@ -40,34 +44,28 @@ func NewJobRepository(pool Repository) *JobRepository {
 
 func (jr *JobRepository) SaveResult(
 	ctx context.Context,
-	outcome types.Outcome,
-	testResults []dt.TestResult,
-	logs []types.LogEvent,
-	nodeMessageLogs []t.TraceEvent,
-	startTime time.Time,
-	job types.Job,
-	timeSpent utils.TimeSpentPayload,
+	results JobResult,
 ) error {
-	if testResults == nil {
-		testResults = []dt.TestResult{}
+	if results.Artifacts.TestResults == nil {
+		results.Artifacts.TestResults = []dt.TestResult{}
 	}
 
-	outcomeJSON, err := json.Marshal(outcome)
+	outcomeJSON, err := json.Marshal(results.Outcome)
 	if err != nil {
 		return fmt.Errorf("failed to marshal outcome: %w", err)
 	}
 
-	resultsJSON, err := json.Marshal(testResults)
+	resultsJSON, err := json.Marshal(results.Artifacts.TestResults)
 	if err != nil {
 		return fmt.Errorf("failed to marshal test results: %w", err)
 	}
 
-	logsJSON, err := json.Marshal(logs)
+	logsJSON, err := json.Marshal(results.Logs)
 	if err != nil {
 		return fmt.Errorf("failed to marshal logs: %w", err)
 	}
 
-	duration := time.Since(startTime).Milliseconds()
+	duration := results.Duration.Milliseconds()
 	tx, err := jr.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -86,24 +84,24 @@ func (jr *JobRepository) SaveResult(
 		resultsJSON,
 		duration,
 		logsJSON,
-		job.SubmittedAt,
-		job.JobUID,
-		job.UserID,
-		job.ProblemID,
-		timeSpent.Compiling,
-		timeSpent.Running,
-		timeSpent.Reserving,
-		timeSpent.Pending,
-		timeSpent.ConfiguringNetwork,
+		results.Job.SubmittedAt,
+		results.Job.JobUID,
+		results.Job.UserID,
+		results.Job.ProblemID,
+		results.Timespent.Compiling,
+		results.Timespent.Running,
+		results.Timespent.Reserving,
+		results.Timespent.Pending,
+		results.Timespent.ConfiguringNetwork,
 	); err != nil {
 		return fmt.Errorf("insert job_results: %w", err)
 	}
 
-	if len(nodeMessageLogs) > 0 {
-		values := make([]interface{}, 0, len(nodeMessageLogs)*10)
-		placeholders := make([]string, 0, len(nodeMessageLogs))
+	if len(results.Artifacts.NodeMessageLogs) > 0 {
+		values := make([]interface{}, 0, len(results.Artifacts.NodeMessageLogs)*10)
+		placeholders := make([]string, 0, len(results.Artifacts.NodeMessageLogs))
 
-		for i, msg := range nodeMessageLogs {
+		for i, msg := range results.Artifacts.NodeMessageLogs {
 			vcJSON, err := json.Marshal(msg.VectorClock)
 			if err != nil {
 				return fmt.Errorf("marshal vector clock: %w", err)
@@ -116,7 +114,7 @@ func (jr *JobRepository) SaveResult(
 			))
 
 			values = append(values,
-				job.JobUID,
+				results.Job.JobUID,
 				msg.Timestamp,
 				msg.From,
 				msg.To,

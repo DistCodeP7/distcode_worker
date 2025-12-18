@@ -240,13 +240,15 @@ func (d *JobDispatcher) finalizeJob(
 
 	saveErr := d.jobStore.SaveResult(
 		saveCtx,
-		outcome,
-		artifacts.TestResults,
-		session.GetBufferedLogs(),
-		artifacts.NodeMessageLogs,
-		session.StartTime(),
-		job,
-		utils.MapToPayload(timeSpent),
+		db.JobResult{
+			Job:       job,
+			Logs:      session.GetBufferedLogs(),
+			Artifacts: artifacts,
+			Outcome:   outcome,
+			Timespent: utils.MapToPayload(timeSpent),
+			Duration:  time.Since(session.StartTime()),
+			Error:     err,
+		},
 	)
 
 	if saveErr != nil {
