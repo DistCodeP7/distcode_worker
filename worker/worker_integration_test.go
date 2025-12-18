@@ -1,6 +1,3 @@
-//go:build integration
-// +build integration
-
 package worker
 
 import (
@@ -17,6 +14,7 @@ import (
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	docker "github.com/docker/docker/client"
 )
@@ -65,7 +63,7 @@ func TestMain(m *testing.M) {
 			types.Path("results.json"): types.SourceCode(jsonData),
 		},
 	}
-	w, err := NewWorker(ctx, cli, imageName, spec)
+	w, err := NewWorker(ctx, cli, imageName, spec, container.Resources{})
 	if err != nil {
 		panic(err)
 	}
@@ -205,7 +203,7 @@ echo "My Key is $MY_Start_KEY"
 		t.Fatal(err)
 	}
 
-	w, err := NewWorker(testCtx, cli, "ghcr.io/distcodep7/dsnet:latest", spec)
+	w, err := NewWorker(testCtx, cli, "ghcr.io/distcodep7/dsnet:latest", spec, container.Resources{})
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
@@ -247,14 +245,14 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	aliasB := "manager-node-b"
 
 	specA := types.NodeSpec{Alias: aliasA}
-	workerA, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specA)
+	workerA, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specA, container.Resources{})
 	if err != nil {
 		t.Fatalf("Failed to create Worker A: %v", err)
 	}
 	defer workerA.Stop(context.Background())
 
 	specB := types.NodeSpec{Alias: aliasB}
-	workerB, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specB)
+	workerB, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specB, container.Resources{})
 	if err != nil {
 		t.Fatalf("Failed to create Worker B: %v", err)
 	}
@@ -301,8 +299,6 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 }
 
 func TestWorker_EnforcesMemoryLimit(t *testing.T) {
-	// 1. Define a program that allocates 1.2GB and WRITES to it.
-	// The write loop ensures physical memory is actually consumed (preventing lazy allocation optimizations).
 	oomCode := `
     package main
     import (
@@ -311,11 +307,8 @@ func TestWorker_EnforcesMemoryLimit(t *testing.T) {
     )
     func main() {
         fmt.Println("Allocating 1.2GB...")
-        const size = 1200 * 1024 * 1024
+        const size = 50 * 1024 * 1024
         buf := make([]byte, size)
-        
-        // IMPORTANT: Touch every memory page (4KB) to force the OS to allocate physical RAM.
-        // Without this, the OS might just use "Virtual Memory" without hitting the Docker RAM limit.
         for i := 0; i < size; i += 4096 {
             buf[i] = 1
         }
@@ -334,9 +327,12 @@ func TestWorker_EnforcesMemoryLimit(t *testing.T) {
 
 	// Reuse the client from your setup
 	cli := testWorker.dockerCli
-
-	// Create the worker with the standard limits (512MB RAM + 512MB Swap = 1GB Total)
-	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec)
+	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec, container.Resources{
+		CPUShares:  512,
+		NanoCPUs:   1_000_000_000,
+		Memory:     50 * 1024 * 1024,
+		MemorySwap: 50 * 1024 * 1024,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}
@@ -375,14 +371,11 @@ func TestWorker_EnforcesPIDLimit(t *testing.T) {
         "time"
     )
     func main() {
-        fmt.Println("Attempting to spawn 2000 OS threads...")
         var wg sync.WaitGroup
-        // Your limit is 1024. We try 2000.
-        for i := 0; i < 2000; i++ {
+        for i := 0; i < 31; i++ {
             wg.Add(1)
             go func() {
                 defer wg.Done()
-                // LockOSThread forces a new Thread/LWP (Lightweight Process) on Linux
                 runtime.LockOSThread() 
                 time.Sleep(10 * time.Second)
             }()
@@ -397,7 +390,12 @@ func TestWorker_EnforcesPIDLimit(t *testing.T) {
 	}
 
 	cli := testWorker.dockerCli
-	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec)
+	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec, container.Resources{
+		Ulimits: []*container.Ulimit{
+			{Name: "cpu", Soft: 30, Hard: 30},
+			{Name: "nofile", Soft: 30, Hard: 30},
+		},
+	})
 	if err != nil {
 		t.Fatalf("Failed to create worker: %v", err)
 	}

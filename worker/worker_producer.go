@@ -7,6 +7,8 @@ import (
 
 	"github.com/DistCodeP7/distcode_worker/dockercli"
 	t "github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
+	"github.com/docker/docker/api/types/container"
 )
 
 type WorkerProducer interface {
@@ -16,15 +18,42 @@ type WorkerProducer interface {
 type DockerWorkerProducer struct {
 	dockerCli       dockercli.Client
 	workerImageName string
+	ressourceConfig container.Resources
 }
 
 var _ WorkerProducer = (*DockerWorkerProducer)(nil)
 
-func NewDockerWorkerProducer(dockerCli dockercli.Client, workerImageName string) *DockerWorkerProducer {
-	return &DockerWorkerProducer{
+type WorkerProducerOption func(*DockerWorkerProducer)
+
+func WithResources(res container.Resources) WorkerProducerOption {
+	return func(dwp *DockerWorkerProducer) {
+		dwp.ressourceConfig = res
+	}
+}
+
+func NewDockerWorkerProducer(dockerCli dockercli.Client, workerImageName string, opts ...WorkerProducerOption) *DockerWorkerProducer {
+	dwp := &DockerWorkerProducer{
 		dockerCli:       dockerCli,
 		workerImageName: workerImageName,
+		ressourceConfig: container.Resources{
+			CPUShares:      512,
+			NanoCPUs:       1_000_000_000,
+			Memory:         512 * 1024 * 1024,
+			MemorySwap:     1024 * 1024 * 1024,
+			PidsLimit:      utils.PtrInt64(1024),
+			OomKillDisable: utils.PtrBool(false),
+			Ulimits: []*container.Ulimit{
+				{Name: "cpu", Soft: 30, Hard: 30},
+				{Name: "nofile", Soft: 1024, Hard: 1024},
+			},
+		},
 	}
+
+	for _, opt := range opts {
+		opt(dwp)
+	}
+
+	return dwp
 }
 
 // NewWorkers creates new Docker-based workers based on the provided specifications.
@@ -42,7 +71,7 @@ func (dwp *DockerWorkerProducer) NewWorkers(ctx context.Context, specs []t.NodeS
 		s := spec
 
 		wg.Go(func() {
-			w, err := NewWorker(ctx, dwp.dockerCli, dwp.workerImageName, s)
+			w, err := NewWorker(ctx, dwp.dockerCli, dwp.workerImageName, s, dwp.ressourceConfig)
 			if err != nil {
 				errMu.Lock()
 				errors = append(errors, err)

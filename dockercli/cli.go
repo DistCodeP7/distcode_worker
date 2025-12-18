@@ -54,8 +54,6 @@ type NetworkConnector interface {
 	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 }
 
-// --- Aggregate Interfaces ---
-
 // WorkerRuntime represents ONLY the methods the Worker struct needs after it is running.
 type WorkerRuntime interface {
 	ContainerController
@@ -84,7 +82,6 @@ func NewClientFromEnv() (*DockerClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Initialize the embedded field
 	return &DockerClient{Client: cli}, nil
 }
 

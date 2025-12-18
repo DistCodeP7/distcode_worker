@@ -65,7 +65,7 @@ type NewWorkerCli interface {
 
 // NewWorker creates and starts a new Docker container and returns the Worker instance.
 // Errors are returned for the caller to log if needed.
-func NewWorker(ctx context.Context, cli NewWorkerCli, workerImageName string, spec t.NodeSpec) (*DockerWorker, error) {
+func NewWorker(ctx context.Context, cli NewWorkerCli, workerImageName string, spec t.NodeSpec, resources container.Resources) (*DockerWorker, error) {
 	envVars := make([]string, 0, len(spec.Envs))
 	for _, env := range spec.Envs {
 		envVars = append(envVars, fmt.Sprintf("%s=%s", env.Key, env.Value))
@@ -90,18 +90,7 @@ func NewWorker(ctx context.Context, cli NewWorkerCli, workerImageName string, sp
 				Target: "/root/.cache/go-build",
 			},
 		},
-		Resources: container.Resources{
-			CPUShares:      512,
-			NanoCPUs:       1_000_000_000,
-			Memory:         512 * 1024 * 1024,
-			MemorySwap:     1024 * 1024 * 1024,
-			PidsLimit:      utils.PtrInt64(1024),
-			OomKillDisable: utils.PtrBool(false),
-			Ulimits: []*container.Ulimit{
-				{Name: "cpu", Soft: 30, Hard: 30},
-				{Name: "nofile", Soft: 1024, Hard: 1024},
-			},
-		},
+		Resources: resources,
 	}
 
 	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, "")
