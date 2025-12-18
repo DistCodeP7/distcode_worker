@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/DistCodeP7/distcode_worker/dockercli"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/distcodep7/dsnet/testing/disttest"
@@ -27,7 +29,7 @@ var (
 func TestMain(m *testing.M) {
 	imageName := "ghcr.io/distcodep7/dsnet:latest"
 	ctx := context.Background()
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithVersion("1.48"))
+	cli, err := dockercli.NewClientFromEnv("1.48")
 	if err != nil {
 		panic(err)
 	}
@@ -245,56 +247,75 @@ func TestWorker_NetworkManager_Integration(t *testing.T) {
 	aliasB := "manager-node-b"
 
 	specA := types.NodeSpec{Alias: aliasA}
-	workerA, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specA, container.Resources{})
-	if err != nil {
-		t.Fatalf("Failed to create Worker A: %v", err)
-	}
-	defer workerA.Stop(context.Background())
-
 	specB := types.NodeSpec{Alias: aliasB}
-	workerB, err := NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specB, container.Resources{})
-	if err != nil {
-		t.Fatalf("Failed to create Worker B: %v", err)
+
+	var workerA, workerB Worker
+	var errA, errB error
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		workerA, errA = NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specA, container.Resources{})
+	})
+
+	wg.Go(func() {
+		workerB, errB = NewWorker(ctx, cli, "ghcr.io/distcodep7/dsnet:latest", specB, container.Resources{})
+	})
+
+	wg.Wait()
+
+	if errA != nil {
+		t.Fatalf("Failed to create Worker A: %v", errA)
+	}
+
+	if errB != nil {
+		t.Fatalf("Failed to create Worker B: %v", errB)
 	}
 	defer workerB.Stop(context.Background())
+	defer workerA.Stop(context.Background())
 
 	netManager := NewDockerNetworkManager(cli)
-
 	workers := []Worker{workerA, workerB}
+
 	cleanup, netName, err := netManager.CreateAndConnect(ctx, workers)
 	if err != nil {
 		t.Fatalf("NetworkManager failed to connect workers: %v", err)
 	}
-
 	defer cleanup()
 
 	t.Logf("Network Manager created network: %s", netName)
-	t.Logf("Attempting to ping %s from %s...", aliasB, aliasA)
 
 	var bufA bytes.Buffer
-	err = workerA.ExecuteCommand(ctx, ExecuteCommandOptions{
-		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasB),
-		OutputWriter: &bufA,
+	var bufB bytes.Buffer
+	var err1 error
+	var err2 error
+
+	// Ping from A to B
+	wg.Go(func() {
+		err1 = workerA.ExecuteCommand(ctx, ExecuteCommandOptions{
+			Cmd:          fmt.Sprintf("timeout 0.2 ping -c 1 %s", aliasB),
+			OutputWriter: &bufA,
+		})
 	})
 
-	if err != nil {
-		t.Fatalf("Worker A failed to ping Worker B. Error: %v\nOutput:\n%s", err, bufA.String())
-	}
+	// Ping from B to A
+	wg.Go(func() {
+		err2 = workerB.ExecuteCommand(ctx, ExecuteCommandOptions{
+			Cmd:          fmt.Sprintf("timeout 0.2 ping -c 1 %s", aliasA),
+			OutputWriter: &bufB,
+		})
+	})
+
+	wg.Wait()
 
 	if !strings.Contains(bufA.String(), "0% packet loss") {
 		t.Errorf("Ping output did not indicate success:\n%s", bufA.String())
 	}
+	if err1 != nil {
+		t.Fatalf("Worker A failed to ping Worker B. Error: %v\nOutput:\n%s", err1, bufA.String())
+	}
 
-	t.Logf("Attempting to ping %s from %s...", aliasA, aliasB)
-
-	var bufB bytes.Buffer
-	err = workerB.ExecuteCommand(ctx, ExecuteCommandOptions{
-		Cmd:          fmt.Sprintf("ping -c 4 %s", aliasA),
-		OutputWriter: &bufB,
-	})
-
-	if err != nil {
-		t.Fatalf("Worker B failed to ping Worker A. Error: %v\nOutput:\n%s", err, bufB.String())
+	if err2 != nil {
+		t.Fatalf("Worker B failed to ping Worker A. Error: %v\nOutput:\n%s", err2, bufB.String())
 	}
 }
 
@@ -306,14 +327,11 @@ func TestWorker_EnforcesMemoryLimit(t *testing.T) {
         "time"
     )
     func main() {
-        fmt.Println("Allocating 1.2GB...")
         const size = 50 * 1024 * 1024
         buf := make([]byte, size)
         for i := 0; i < size; i += 4096 {
             buf[i] = 1
         }
-        
-        fmt.Println("Allocation complete, sleeping...")
         time.Sleep(1 * time.Second)
     }
     `
@@ -325,7 +343,6 @@ func TestWorker_EnforcesMemoryLimit(t *testing.T) {
 		},
 	}
 
-	// Reuse the client from your setup
 	cli := testWorker.dockerCli
 	w, err := NewWorker(testCtx, cli.(NewWorkerCli), "ghcr.io/distcodep7/dsnet:latest", spec, container.Resources{
 		CPUShares:  512,
@@ -338,20 +355,17 @@ func TestWorker_EnforcesMemoryLimit(t *testing.T) {
 	}
 	defer w.Stop(context.Background())
 
-	// Execute
 	var buf bytes.Buffer
 	err = w.ExecuteCommand(testCtx, ExecuteCommandOptions{
 		Cmd:          "go run main.go",
 		OutputWriter: &buf,
 	})
 
-	// Assert Failure
 	if err == nil {
 		t.Logf("Output: %s", buf.String())
 		t.Fatal("Expected error due to Memory Limit Exceeded (OOM), but command succeeded.")
 	}
 
-	// Assert correct error type (Exit Code 137 = 128 + 9 SIGKILL)
 	expectedErrorFragment := "non-zero exit code"
 	if !strings.Contains(err.Error(), expectedErrorFragment) {
 		t.Errorf("Expected error to mention non-zero exit code (OOM), got: %v", err)
@@ -359,9 +373,7 @@ func TestWorker_EnforcesMemoryLimit(t *testing.T) {
 }
 
 func TestWorker_EnforcesPIDLimit(t *testing.T) {
-	// This Go program attempts to spawn 2000 goroutines that lock OS threads.
-	// Since Go manages goroutines in user-space, we force them to consume PIDs
-	// by using runtime.LockOSThread().
+
 	forkBombCode := `
     package main
     import (
@@ -407,7 +419,6 @@ func TestWorker_EnforcesPIDLimit(t *testing.T) {
 		OutputWriter: &buf,
 	})
 
-	// We expect an error. Usually: "resource temporarily unavailable" or "failed to create new OS thread"
 	if err == nil {
 		t.Fatal("Expected error due to PID limit, but command succeeded.")
 	}

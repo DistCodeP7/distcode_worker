@@ -77,11 +77,22 @@ type DockerClient struct {
 // Ensure implementation satisfies the Client interface
 var _ Client = (*DockerClient)(nil)
 
-func NewClientFromEnv() (*DockerClient, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+func NewClientFromEnv(version ...string) (*DockerClient, error) {
+	opts := []client.Opt{
+		client.FromEnv,
+	}
+
+	if len(version) > 0 && version[0] != "" {
+		opts = append(opts, client.WithVersion(version[0]))
+	} else {
+		opts = append(opts, client.WithAPIVersionNegotiation())
+	}
+
+	cli, err := client.NewClientWithOpts(opts...)
 	if err != nil {
 		return nil, err
 	}
+
 	return &DockerClient{Client: cli}, nil
 }
 
