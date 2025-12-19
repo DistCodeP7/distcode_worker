@@ -23,8 +23,4 @@ jobs:
         run: go build -v ./...
 
       - name: Test unit and integration
-        env:
-          DOCKER_HOST: tcp://localhost:2375
-        run: |
-          docker info
-          go test -tags=integration -v ./...
+        run: go test -v ./...
