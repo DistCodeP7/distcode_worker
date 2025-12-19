@@ -2,10 +2,12 @@ package dockercli
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -33,7 +35,7 @@ type ContainerController interface {
 }
 
 type CommandExecutor interface {
-	ContainerExecCreate(ctx context.Context, container string, config container.ExecOptions) (types.IDResponse, error)
+	ContainerExecCreate(ctx context.Context, container string, config container.ExecOptions) (container.ExecCreateResponse, error)
 	ContainerExecAttach(ctx context.Context, execID string, config container.ExecStartOptions) (types.HijackedResponse, error)
 	ContainerExecStart(ctx context.Context, execID string, config container.ExecStartOptions) error
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
@@ -49,9 +51,8 @@ type NetworkConnector interface {
 	NetworkConnect(ctx context.Context, networkID, containerID string, config *network.EndpointSettings) error
 	NetworkDisconnect(ctx context.Context, networkID, containerID string, force bool) error
 	NetworkInspect(ctx context.Context, networkID string, options network.InspectOptions) (network.Inspect, error)
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
 }
-
-// --- Aggregate Interfaces ---
 
 // WorkerRuntime represents ONLY the methods the Worker struct needs after it is running.
 type WorkerRuntime interface {
@@ -69,8 +70,6 @@ type Client interface {
 	Close() error
 }
 
-// --- Implementation ---
-
 type DockerClient struct {
 	*client.Client
 }
@@ -78,16 +77,59 @@ type DockerClient struct {
 // Ensure implementation satisfies the Client interface
 var _ Client = (*DockerClient)(nil)
 
-func NewClientFromEnv() (*DockerClient, error) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+func NewClientFromEnv(version ...string) (*DockerClient, error) {
+	opts := []client.Opt{
+		client.FromEnv,
+	}
+
+	if len(version) > 0 && version[0] != "" {
+		opts = append(opts, client.WithVersion(version[0]))
+	} else {
+		opts = append(opts, client.WithAPIVersionNegotiation())
+	}
+
+	cli, err := client.NewClientWithOpts(opts...)
 	if err != nil {
 		return nil, err
 	}
-	// Initialize the embedded field
+
 	return &DockerClient{Client: cli}, nil
 }
 
-// NewClient wraps an existing raw docker client.
-func NewClient(cli *client.Client) *DockerClient {
-	return &DockerClient{Client: cli}
+func (d *DockerClient) ListWorkers(ctx context.Context) ([]container.Summary, error) {
+	listFilters := filters.NewArgs()
+	listFilters.Add("label", "managed_by=distcode_worker")
+	containers, err := d.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: listFilters,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+	return containers, nil
+}
+
+func (d *DockerClient) CleanupWorkers(ctx context.Context) ([]string, error) {
+	listFilters := filters.NewArgs()
+	listFilters.Add("label", "managed_by=distcode_worker")
+	containers, err := d.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: listFilters,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var removedIDs []string
+	for _, c := range containers {
+		err := d.ContainerRemove(ctx, c.ID, container.RemoveOptions{
+			Force: true,
+		})
+		if err != nil {
+			return removedIDs, fmt.Errorf("failed to remove container %s: %w", c.ID[:12], err)
+		}
+		removedIDs = append(removedIDs, c.ID)
+	}
+
+	return removedIDs, nil
 }

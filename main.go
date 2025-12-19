@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/DistCodeP7/distcode_worker/db"
 	"github.com/DistCodeP7/distcode_worker/endpoints"
 	"github.com/DistCodeP7/distcode_worker/endpoints/health"
@@ -92,5 +94,6 @@ func main() {
 		log.Logger.WithError(err).Error("Error shutting down workers")
 	}
 
+	appResources.DockerCli.CleanupWorkers(context.Background())
 	log.Logger.Info("All workers have finished. Exiting.")
 }

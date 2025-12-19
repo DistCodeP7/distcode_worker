@@ -13,19 +13,6 @@ import (
 
 func StartJobConsumer(ctx context.Context, url string, jobs chan<- types.Job) error {
 	queueName := "jobs"
-	jobRequests := make(chan types.JobRequest)
-
-	// Goroutine to map JobRequest -> Job
-	go func() {
-		for req := range jobRequests {
-			job, err := mapper.ConvertToJobRequest(&req)
-			if err != nil {
-				log.Logger.WithError(err).Error("Failed to convert JobRequest to Job")
-				continue
-			}
-			jobs <- *job
-		}
-	}()
 
 	return ReconnectorRabbitMQ(ctx, url, queueName,
 		func(ch *amqp.Channel) error {
@@ -33,24 +20,54 @@ func StartJobConsumer(ctx context.Context, url string, jobs chan<- types.Job) er
 			return err
 		},
 		func(ch *amqp.Channel) error {
-			msgs, err := ch.Consume(queueName, "", true, false, false, false, nil)
+			if err := ch.Qos(1, 0, false); err != nil {
+				return err
+			}
+
+			msgs, err := ch.Consume(queueName, "", false, false, false, false, nil)
 			if err != nil {
 				return err
 			}
+
 			for {
 				select {
 				case d, ok := <-msgs:
 					if !ok {
 						return fmt.Errorf("message channel closed")
 					}
-					handleDelivery(d, jobRequests)
+
+					processDelivery(d, jobs)
+					if err := d.Ack(false); err != nil {
+						log.Logger.WithError(err).Error("Failed to ack message")
+					}
+
 				case <-ctx.Done():
-					close(jobRequests)
 					close(jobs)
 					return nil
 				}
 			}
 		})
+}
+
+// Helper function to handle parsing and blocking send
+func processDelivery(d amqp.Delivery, jobs chan<- types.Job) {
+	if d.Body == nil {
+		return
+	}
+
+	var req types.JobRequest
+	if err := json.Unmarshal(d.Body, &req); err != nil {
+		log.Logger.WithError(err).Error("Failed to unmarshal MQ message")
+		return
+	}
+
+	job, err := mapper.ConvertToJobRequest(&req)
+	if err != nil {
+		log.Logger.WithError(err).Error("Failed to convert JobRequest to Job")
+		return
+	}
+
+	jobs <- *job
 }
 
 func StartJobCanceller(ctx context.Context, url string, jobs chan<- types.CancelJobRequest) error {

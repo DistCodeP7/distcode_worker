@@ -1,6 +1,7 @@
 package jobsession
 
 import (
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -80,7 +81,7 @@ func TestNewLogWriter_ExceedsMaxBytes_LeadsToWriteError(t *testing.T) {
 	for i := 0; i < linesToWrite; i++ {
 		_, err := wc.Write([]byte("123456789\n"))
 		if err != nil {
-			if err == ErrLogLimitExceeded {
+			if errors.Is(err, ErrLogLimitExceeded) {
 				return
 			}
 			t.Fatalf("unexpected write error at iteration %d: %v", i, err)
@@ -105,7 +106,7 @@ func TestNewLogWriter_ExceedsMaxLines_LeadsToWriteError(t *testing.T) {
 	for i := range linesToWrite {
 		_, err := wc.Write([]byte("\n"))
 		if err != nil {
-			if err == ErrLogLimitExceeded {
+			if errors.Is(err, ErrLogLimitExceeded) {
 				_ = wc.Close()
 				return
 			}

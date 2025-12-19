@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/DistCodeP7/distcode_worker/jobsession"
 	"github.com/DistCodeP7/distcode_worker/log"
 	"github.com/DistCodeP7/distcode_worker/types"
+	"github.com/DistCodeP7/distcode_worker/utils"
 	"github.com/google/uuid"
 	"github.com/jonboulle/clockwork"
 )
@@ -128,7 +130,7 @@ func (d *JobDispatcher) waitForSlots(ctx context.Context, job types.Job, count i
 
 		case err := <-errCh:
 			if err != nil {
-				if err == context.Canceled {
+				if errors.Is(err, context.Canceled) {
 					d.failCancelledJob(job, "cancelled during reservation")
 				} else if _, ok := err.(*ErrorReserveTooManyWorkers); ok {
 					log.Logger.Warnf("Job %s requests too many workers: %v", job.JobUID.String(), err)
@@ -168,11 +170,10 @@ func (d *JobDispatcher) failCancelledJob(job types.Job, reason string) {
 // It assumes 'reservedSlots' have already been secured.
 func (d *JobDispatcher) processJob(ctx context.Context, job types.Job, reservedSlots int) {
 	defer d.activeJobsWg.Done()
-	d.metricsCollector.IncCurrentJobs()
-	defer d.metricsCollector.DecCurrentJobs()
+	endJob := d.metricsCollector.StartJob()
+	defer endJob()
 
 	log.Logger.Infof("Starting job %s", job.JobUID.String())
-	d.metricsCollector.IncJobTotal()
 
 	session := jobsession.NewJobSession(job, d.resultsChannel)
 	session.SetPhase(types.PhasePending, "Initializing...")
@@ -225,24 +226,30 @@ func (d *JobDispatcher) finalizeJob(
 	outcome types.Outcome,
 	err error,
 ) {
+
+	var timeSpent map[types.Phase]time.Duration
 	if outcome == types.OutcomeSuccess {
-		session.FinishSuccess(artifacts)
+		timeSpent = session.FinishSuccess(artifacts)
 	} else {
-		session.FinishFail(artifacts, outcome, err, "")
+		timeSpent = session.FinishFail(artifacts, outcome, err, "")
 	}
 
+	d.metricsCollector.TrackTimeSpent(timeSpent)
 	d.metricsCollector.IncJobOutcome(outcome)
 	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	saveErr := d.jobStore.SaveResult(
 		saveCtx,
-		outcome,
-		artifacts.TestResults,
-		session.GetBufferedLogs(),
-		artifacts.NodeMessageLogs,
-		session.StartTime(),
-		job,
+		db.JobResult{
+			Job:       job,
+			Logs:      session.GetBufferedLogs(),
+			Artifacts: artifacts,
+			Outcome:   outcome,
+			Timespent: utils.MapToPayload(timeSpent),
+			Duration:  time.Since(session.StartTime()),
+			Error:     err,
+		},
 	)
 
 	if saveErr != nil {

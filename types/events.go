@@ -8,7 +8,6 @@ import (
 type Phase string
 
 const (
-	PhaseDebugging          Phase = "DEBUGGING"
 	PhaseReserving          Phase = "RESERVING"
 	PhaseConfiguringNetwork Phase = "CONFIGURING_NETWORK"
 	PhasePending            Phase = "PENDING"
@@ -23,16 +22,6 @@ const (
 	TypeLog    JobEventType = "log"
 	TypeStatus JobEventType = "status"
 	TypeResult JobEventType = "result"
-)
-
-type Outcome string
-
-const (
-	OutcomeSuccess          Outcome = "SUCCESS"
-	OutcomeFailed           Outcome = "FAILED"
-	OutcomeCompilationError Outcome = "COMPILATION_ERROR"
-	OutcomeTimeout          Outcome = "TIMEOUT"
-	OutcomeCanceled         Outcome = "CANCELED"
 )
 
 type StreamingJobEvent struct {
@@ -62,3 +51,13 @@ type ResultEvent struct {
 	FailedWorkerID  string               `json:"failed_worker_id,omitempty"`
 	Error           string               `json:"error,omitempty"`
 }
+
+type Outcome string
+
+const (
+	OutcomeSuccess          Outcome = "SUCCESS"
+	OutcomeFailed           Outcome = "FAILED"
+	OutcomeCompilationError Outcome = "COMPILATION_ERROR"
+	OutcomeTimeout          Outcome = "TIMEOUT"
+	OutcomeCanceled         Outcome = "CANCELED"
+)

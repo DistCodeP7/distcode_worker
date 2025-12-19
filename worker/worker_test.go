@@ -199,7 +199,7 @@ func TestNewWorker_EnvAssembly(t *testing.T) {
 		},
 	}
 
-	_, err := NewWorker(context.Background(), mock, "alpine", spec)
+	_, err := NewWorker(context.Background(), mock, "alpine", spec, container.Resources{})
 	if err != nil {
 		t.Fatal(err)
 	}
