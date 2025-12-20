@@ -1,4 +1,4 @@
-package mq
+package rabbit
 
 import (
 	"os"
@@ -15,23 +15,23 @@ type MQResources struct {
 	ResultsCh    chan types.StreamingJobEvent
 }
 
-func StartJobHandlers(ressources MQResources) {
+func StartJobHandlers(resources MQResources) {
 	url := os.Getenv("MQ_URL")
 
 	go func() {
-		if err := StartJobConsumer(ressources.AppResources.Ctx, url, ressources.JobsCh); err != nil {
+		if err := StartJobConsumer(resources.AppResources.Ctx, url, resources.JobsCh); err != nil {
 			log.Logger.WithError(err).Error("MQ error")
 		}
 	}()
 
 	go func() {
-		if err := StartJobCanceller(ressources.AppResources.Ctx, url, ressources.CancelJobCh); err != nil {
+		if err := StartJobCanceller(resources.AppResources.Ctx, url, resources.CancelJobCh); err != nil {
 			log.Logger.WithError(err).Error("MQ error")
 		}
 	}()
 
 	go func() {
-		if err := PublishStreamingEvents(ressources.AppResources.Ctx, url, ressources.ResultsCh); err != nil {
+		if err := PublishStreamingEvents(resources.AppResources.Ctx, url, resources.ResultsCh); err != nil {
 			log.Logger.WithError(err).Fatal("MQ results publisher error")
 		}
 	}()

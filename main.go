@@ -8,7 +8,7 @@ import (
 	"github.com/DistCodeP7/distcode_worker/endpoints/health"
 	"github.com/DistCodeP7/distcode_worker/endpoints/metrics"
 	"github.com/DistCodeP7/distcode_worker/log"
-	"github.com/DistCodeP7/distcode_worker/mq"
+	"github.com/DistCodeP7/distcode_worker/rabbit"
 	"github.com/DistCodeP7/distcode_worker/setup"
 	"github.com/DistCodeP7/distcode_worker/types"
 	"github.com/DistCodeP7/distcode_worker/worker"
@@ -48,7 +48,7 @@ func main() {
 
 	defer close(resultsCh)
 
-	mq.StartJobHandlers(mq.MQResources{
+	rabbit.StartJobHandlers(rabbit.MQResources{
 		AppResources: appResources,
 		JobsCh:       jobsCh,
 		CancelJobCh:  cancelJobCh,
